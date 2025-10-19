@@ -188,7 +188,7 @@ python3 scripts/tldr-doc-gen.py forest --validate
 ## Resources
 
 - **Spec**: [docs/spec-v0.1.md](docs/spec-v0.1.md)
-- **Forest CLI** (reference impl): https://github.com/your-org/forest
+- **Forest CLI** (reference impl): https://github.com/bwl/forest
 - **Generator comparison**: [scripts/README.md](scripts/README.md)
 - **Example output**: [docs/examples/forest_complete.txt](docs/examples/forest_complete.txt)
 

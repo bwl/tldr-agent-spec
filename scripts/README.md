@@ -21,11 +21,11 @@ All scripts work with **any** CLI that implements the TLDR v0.1 standard (not ju
 ```
 
 **Features**:
-- ✅ Comprehensive validation with colored output
-- ✅ Command categorization by namespace
-- ✅ Single text file output
-- ✅ No dependencies (pure bash)
-- ✅ Works on any UNIX-like system
+- ☑ Comprehensive validation with colored output
+- ☑ Command categorization by namespace
+- ☑ Single text file output
+- ☑ No dependencies (pure bash)
+- ☑ Works on any UNIX-like system
 
 ---
 
@@ -45,13 +45,13 @@ node tldr-doc-gen.js forest  # Alternative
 ```
 
 **Features**:
-- ✅ Three output formats (TXT, MD, JSON)
-- ✅ Dependency graph analysis (from RELATED fields)
-- ✅ Command categorization by namespace
-- ✅ Flag type distribution analysis
-- ✅ Markdown with clickable TOC
-- ✅ Structured JSON for programmatic access
-- ✅ Detailed validation with error reporting
+- ☑ Three output formats (TXT, MD, JSON)
+- ☑ Dependency graph analysis (from RELATED fields)
+- ☑ Command categorization by namespace
+- ☑ Flag type distribution analysis
+- ☑ Markdown with clickable TOC
+- ☑ Structured JSON for programmatic access
+- ☑ Detailed validation with error reporting
 
 **Example outputs**:
 - `forest_tldr.txt` - 13KB ASCII documentation
@@ -76,14 +76,14 @@ node tldr-doc-gen.js forest  # Alternative
 ```
 
 **Features**:
-- ✅ Advanced analytics and metrics
-- ✅ Coverage analysis (commands with examples, schemas, etc.)
-- ✅ Flag type distribution
-- ✅ Command hierarchy visualization
-- ✅ Dependency graph with centrality calculation
-- ✅ Beautiful HTML report with charts and metrics
-- ✅ Console analytics mode for quick insights
-- ✅ Python-native for data science workflows
+- ☑ Advanced analytics and metrics
+- ☑ Coverage analysis (commands with examples, schemas, etc.)
+- ☑ Flag type distribution
+- ☑ Command hierarchy visualization
+- ☑ Dependency graph with centrality calculation
+- ☑ Beautiful HTML report with charts and metrics
+- ☑ Console analytics mode for quick insights
+- ☑ Python-native for data science workflows
 
 **Analytics includes**:
 - Total commands and namespace distribution
@@ -102,17 +102,17 @@ node tldr-doc-gen.js forest  # Alternative
 
 | Feature | Bash | Node.js | Python |
 |---------|------|---------|--------|
-| Text output | ✅ | ✅ | ❌ |
-| Markdown output | ❌ | ✅ | ❌ |
-| JSON output | ❌ | ✅ | ✅ |
-| HTML output | ❌ | ❌ | ✅ |
-| Validation | ✅ | ✅ | ✅ |
-| Dependency graph | ❌ | ✅ | ✅ |
-| Flag analysis | ❌ | ✅ | ✅ |
-| Coverage metrics | ❌ | ❌ | ✅ |
-| Analytics console | ❌ | ❌ | ✅ |
-| No dependencies | ✅ | ❌ | ❌ |
-| Cross-platform | ✅ | ✅ | ✅ |
+| Text output | ☑ | ☑ | ☐ |
+| Markdown output | ☐ | ☑ | ☐ |
+| JSON output | ☐ | ☑ | ☑ |
+| HTML output | ☐ | ☐ | ☑ |
+| Validation | ☑ | ☑ | ☑ |
+| Dependency graph | ☐ | ☑ | ☑ |
+| Flag analysis | ☐ | ☑ | ☑ |
+| Coverage metrics | ☐ | ☐ | ☑ |
+| Analytics console | ☐ | ☐ | ☑ |
+| No dependencies | ☑ | ☐ | ☐ |
+| Cross-platform | ☑ | ☑ | ☑ |
 
 ## Choosing a Script
 

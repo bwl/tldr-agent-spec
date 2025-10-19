@@ -263,7 +263,7 @@ This specification is released into the public domain. Implementers may use, mod
 
 ## References
 
-- Forest CLI: https://github.com/your-org/forest (reference implementation)
+- Forest CLI: https://github.com/bwl/forest (reference implementation)
 - Documentation Generators: `scripts/tldr-doc-gen.{sh,js,py}`
 - Example Output: `docs/forest_tldr_example.txt`
 

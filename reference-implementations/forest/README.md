@@ -6,12 +6,12 @@ This directory contains the complete TypeScript reference implementation of the 
 
 Forest is a graph-native knowledge base CLI that was the first full implementation of the TLDR standard. This reference implementation demonstrates:
 
-- ✅ Complete metadata registry for 26 commands
-- ✅ Both ASCII and JSON output modes
-- ✅ Integration with Clerc CLI framework
-- ✅ Type-safe TypeScript implementation
-- ✅ Per-command TLDR flag handling
-- ✅ Early exit pattern (TLDR before business logic)
+- ☑ Complete metadata registry for 26 commands
+- ☑ Both ASCII and JSON output modes
+- ☑ Integration with Clerc CLI framework
+- ☑ Type-safe TypeScript implementation
+- ☑ Per-command TLDR flag handling
+- ☑ Early exit pattern (TLDR before business logic)
 
 ## Files
 
@@ -101,7 +101,7 @@ Forest uses the [Clerc](https://github.com/chneau/clerc) CLI framework. Key inte
 
 ## Full Forest Source
 
-- **Main repo**: https://github.com/your-org/forest
+- **Main repo**: https://github.com/bwl/forest
 - **TLDR implementation**: `src/cli/tldr.ts` (this file)
 - **Command examples**: `src/cli/commands/*.ts`
 - **Entry point**: `src/index.ts`
@@ -223,4 +223,4 @@ All three should report Forest as TLDR v0.1 compliant.
 - **Spec questions**: See `docs/spec-v0.1.md`
 - **Implementation help**: Review this `tldr.ts` file
 - **Generator usage**: See `scripts/README.md`
-- **Forest-specific questions**: https://github.com/your-org/forest
+- **Forest-specific questions**: https://github.com/bwl/forest
