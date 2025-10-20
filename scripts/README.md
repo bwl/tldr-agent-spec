@@ -1,10 +1,10 @@
 # TLDR Documentation Generator Scripts
 
-Three implementations of a universal TLDR v0.1 documentation generator, each with different strengths and output formats.
+Three implementations of a universal TLDR v0.2 documentation generator, each with different strengths and output formats.
 
 ## Overview
 
-All scripts work with **any** CLI that implements the TLDR v0.1 standard (not just Forest). They validate compliance, generate documentation, and analyze command structures.
+All scripts work with **any** CLI that implements the TLDR v0.2 standard. They validate NDJSON format compliance, generate documentation, and analyze command structures.
 
 ## Scripts
 
@@ -184,31 +184,27 @@ node tldr-doc-gen.js forest  # Alternative
 # ...
 ```
 
-## TLDR v0.1 Standard
+## TLDR v0.2 Standard
 
-All scripts work with any CLI implementing the TLDR v0.1 standard:
+All scripts work with any CLI implementing the TLDR v0.2 standard (NDJSON format):
 
-**Global index** (`<cli> --tldr`):
+**Single call** (`<cli> --tldr`):
 ```
-NAME: forest
-VERSION: 0.2.0
-SUMMARY: Graph-native knowledge base CLI
-COMMANDS: capture,explore,search,stats,health,...
-TLDR_CALL: forest <command> --tldr
+--- tool: git ---
+# meta: tool=git, version=2.46, keymap={cmd:command,p:purpose,in:inputs,out:outputs,...}
+{"cmd":"init","p":"Create an empty repository","in":[],"out":[{"n":"repo_dir","t":"dir"}],...}
+{"cmd":"clone","p":"Clone an existing repository","in":[{"n":"repo_url","t":"str","req":1}],...}
+{"cmd":"commit","p":"Record staged changes","in":[{"n":"message","t":"str","req":1}],...}
+{"cmd":"push","p":"Send commits to remote","in":[{"n":"remote","t":"str","d":"origin"}],...}
 ```
 
-**Command details** (`<cli> <command> --tldr`):
-```
-CMD: capture
-PURPOSE: Create a new note and optionally auto-link into the graph
-INPUTS: ARGS(title,body,tags),STDIN,FILE
-OUTPUTS: node record,edges summary,optional preview
-SIDE_EFFECTS: writes to SQLite DB,computes embeddings,creates/updates edges
-FLAGS: --title=STR|note title;--body=STR|note body;...
-EXAMPLES: forest capture --title "Idea" --body "Text"|...
-RELATED: explore,edges.propose,node.read
-SCHEMA_JSON: emits {"node":{"id":STR,...},...}
-```
+**Key features**:
+- Tool delimiter: `--- tool: <name> ---`
+- Metadata header: `# meta:` with tool name, version, and keymap
+- Command records: One JSON object per line (NDJSON)
+- Keymap: Defines field meanings (e.g., `cmd:command`, `p:purpose`)
+
+See [docs/spec-v0.2.md](../docs/spec-v0.2.md) for complete specification.
 
 ## License
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# tldr-doc-gen.sh - Universal TLDR v0.1 Documentation Generator
+# tldr-doc-gen.sh - Universal TLDR v0.2 Documentation Generator
 #
-# Generates comprehensive documentation for any CLI implementing the TLDR standard.
+# Generates comprehensive documentation for any CLI implementing the TLDR v0.2 standard.
 #
 # Usage:
 #   ./tldr-doc-gen.sh <cli-command> [--validate]
@@ -75,86 +75,124 @@ log_info() {
   echo -e "${BLUE}ℹ $1${NC}"
 }
 
-# Fetch global TLDR
-log_info "Fetching global TLDR index from '$CLI --tldr'..."
-if ! GLOBAL_TLDR=$($CLI --tldr 2>&1); then
-  log_error "Failed to fetch global TLDR"
+# JSON parsing helper (using grep/sed for zero dependencies)
+json_value() {
+  local json="$1"
+  local key="$2"
+  # Simple JSON string extraction (handles basic cases)
+  echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed -E "s/\"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"/\1/"
+}
+
+json_array_value() {
+  local json="$1"
+  local key="$2"
+  # Extract array from JSON (returns everything between [ and ])
+  echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\[[^]]*\]" | sed -E "s/\"$key\"[[:space:]]*:[[:space:]]*\[(.*)\]/\1/"
+}
+
+# Fetch TLDR output
+log_info "Fetching TLDR output from '$CLI --tldr'..."
+if ! TLDR_OUTPUT=$($CLI --tldr 2>&1); then
+  log_error "Failed to fetch TLDR output"
   exit 1
 fi
 
-# Parse global index
-NAME=$(echo "$GLOBAL_TLDR" | grep "^NAME:" | cut -d: -f2- | xargs)
-VERSION=$(echo "$GLOBAL_TLDR" | grep "^VERSION:" | cut -d: -f2- | xargs)
-SUMMARY=$(echo "$GLOBAL_TLDR" | grep "^SUMMARY:" | cut -d: -f2- | xargs)
-COMMANDS=$(echo "$GLOBAL_TLDR" | grep "^COMMANDS:" | cut -d: -f2- | xargs)
-TLDR_CALL=$(echo "$GLOBAL_TLDR" | grep "^TLDR_CALL:" | cut -d: -f2- | xargs)
+# Save to temp file for processing
+echo "$TLDR_OUTPUT" > "$TEMP_DIR/tldr_raw.txt"
 
-# Validate global index
-if [[ -z "$NAME" ]]; then log_error "Global index missing NAME"; fi
-if [[ -z "$VERSION" ]]; then log_error "Global index missing VERSION"; fi
-if [[ -z "$SUMMARY" ]]; then log_error "Global index missing SUMMARY"; fi
-if [[ -z "$COMMANDS" ]]; then log_error "Global index missing COMMANDS"; fi
-if [[ -z "$TLDR_CALL" ]]; then log_error "Global index missing TLDR_CALL"; fi
+# Parse header lines
+TOOL_DELIMITER=$(head -n 1 "$TEMP_DIR/tldr_raw.txt")
+META_LINE=$(sed -n '2p' "$TEMP_DIR/tldr_raw.txt")
 
-if [[ $VALIDATION_ERRORS -gt 0 ]]; then
-  log_error "Global index validation failed with $VALIDATION_ERRORS error(s)"
+# Validate tool delimiter
+if [[ ! "$TOOL_DELIMITER" =~ ^---\ tool:\ .+\ ---$ ]]; then
+  log_error "Invalid tool delimiter (expected '--- tool: <name> ---'): $TOOL_DELIMITER"
   exit 1
 fi
 
-log_success "Global index validated"
+TOOL_NAME=$(echo "$TOOL_DELIMITER" | sed -E 's/^---[[:space:]]+tool:[[:space:]]+(.+)[[:space:]]+---$/\1/')
+log_success "Tool: $TOOL_NAME"
 
-# Convert comma-separated commands to array
-IFS=',' read -ra CMD_ARRAY <<< "$COMMANDS"
-TOTAL_COMMANDS=${#CMD_ARRAY[@]}
+# Validate metadata line
+if [[ ! "$META_LINE" =~ ^#\ meta: ]]; then
+  log_error "Invalid metadata line (expected '# meta: ...'): $META_LINE"
+  exit 1
+fi
+
+# Extract metadata fields
+TOOL_META=$(echo "$META_LINE" | sed 's/^# meta:[[:space:]]*//')
+TOOL_VERSION=$(echo "$TOOL_META" | grep -o "version=[^,]*" | cut -d= -f2)
+KEYMAP=$(echo "$TOOL_META" | grep -o "keymap={[^}]*}" | sed 's/keymap=//')
+
+if [[ -z "$TOOL_VERSION" ]]; then
+  log_error "Metadata missing 'version' field"
+fi
+if [[ -z "$KEYMAP" ]]; then
+  log_error "Metadata missing 'keymap' field"
+fi
+
+log_success "Version: $TOOL_VERSION"
+log_info "Keymap: $KEYMAP"
+
+# Extract command lines (skip first 2 lines: delimiter and metadata)
+tail -n +3 "$TEMP_DIR/tldr_raw.txt" > "$TEMP_DIR/commands.ndjson"
+
+# Count commands
+TOTAL_COMMANDS=$(wc -l < "$TEMP_DIR/commands.ndjson" | xargs)
+
+if [[ $TOTAL_COMMANDS -eq 0 ]]; then
+  log_error "No commands found in TLDR output"
+  exit 1
+fi
 
 log_info "Found $TOTAL_COMMANDS commands"
 
-# Validation mode: check all commands
+# Validation mode: check all command records
 if $VALIDATE_ONLY; then
   log_info "Running validation checks..."
 
-  ACCESSIBLE_COMMANDS=0
-  FAILED_COMMANDS=0
+  VALID_COMMANDS=0
+  INVALID_COMMANDS=0
 
-  for cmd in "${CMD_ARRAY[@]}"; do
-    cmd=$(echo "$cmd" | xargs)  # trim whitespace
+  while IFS= read -r line; do
+    # Skip empty lines
+    [[ -z "$line" ]] && continue
 
-    # Convert dot notation to space (e.g., "node.read" -> "node read")
-    CMD_ARGS=${cmd//./ }
-
-    # Try to fetch command TLDR
-    if CMD_TLDR=$($CLI $CMD_ARGS --tldr 2>/dev/null); then
-      ((ACCESSIBLE_COMMANDS++))
-
-      # Validate required fields
-      CMD_NAME=$(echo "$CMD_TLDR" | grep "^CMD:" | cut -d: -f2- | xargs)
-      PURPOSE=$(echo "$CMD_TLDR" | grep "^PURPOSE:" | cut -d: -f2- | xargs)
-
-      if [[ -z "$CMD_NAME" ]]; then
-        log_warning "Command '$cmd' missing CMD field"
-      fi
-      if [[ -z "$PURPOSE" ]]; then
-        log_warning "Command '$cmd' missing PURPOSE field"
-      fi
-      if [[ "$CMD_NAME" != "$cmd" ]]; then
-        log_warning "Command '$cmd' has mismatched CMD field: '$CMD_NAME'"
-      fi
-    else
-      log_error "Command '$cmd' is not accessible"
-      ((FAILED_COMMANDS++))
+    # Validate JSON syntax (basic check)
+    if ! echo "$line" | grep -q "^{.*}$"; then
+      log_error "Invalid JSON syntax: $line"
+      ((INVALID_COMMANDS++))
+      continue
     fi
-  done
+
+    # Extract cmd and p fields (using our helper)
+    CMD_NAME=$(json_value "$line" "cmd")
+    PURPOSE=$(json_value "$line" "p")
+
+    if [[ -z "$CMD_NAME" ]]; then
+      log_warning "Command missing 'cmd' field: $line"
+      ((INVALID_COMMANDS++))
+      continue
+    fi
+
+    if [[ -z "$PURPOSE" ]]; then
+      log_warning "Command '$CMD_NAME' missing 'p' (purpose) field"
+    fi
+
+    ((VALID_COMMANDS++))
+
+  done < "$TEMP_DIR/commands.ndjson"
 
   echo ""
   echo "════════════════════════════════════════"
   echo "VALIDATION SUMMARY"
   echo "════════════════════════════════════════"
-  log_info "CLI: $NAME v$VERSION"
+  log_info "CLI: $TOOL_NAME v$TOOL_VERSION"
   log_info "Total commands: $TOTAL_COMMANDS"
-  log_success "Accessible commands: $ACCESSIBLE_COMMANDS"
+  log_success "Valid commands: $VALID_COMMANDS"
 
-  if [[ $FAILED_COMMANDS -gt 0 ]]; then
-    log_error "Failed commands: $FAILED_COMMANDS"
+  if [[ $INVALID_COMMANDS -gt 0 ]]; then
+    log_error "Invalid commands: $INVALID_COMMANDS"
   fi
 
   if [[ $VALIDATION_ERRORS -gt 0 ]]; then
@@ -166,11 +204,11 @@ if $VALIDATE_ONLY; then
   fi
 
   echo ""
-  if [[ $VALIDATION_ERRORS -eq 0 ]] && [[ $FAILED_COMMANDS -eq 0 ]]; then
-    log_success "$NAME is TLDR v0.1 compliant ✨"
+  if [[ $VALIDATION_ERRORS -eq 0 ]] && [[ $INVALID_COMMANDS -eq 0 ]]; then
+    log_success "$TOOL_NAME is TLDR v0.2 compliant ✨"
     exit 0
   else
-    log_error "$NAME has validation failures"
+    log_error "$TOOL_NAME has validation failures"
     exit 1
   fi
 fi
@@ -181,93 +219,96 @@ log_info "Generating documentation to $OUTPUT..."
 {
   # Header
   echo "════════════════════════════════════════════════════════════════════════════════"
-  echo "  $NAME v$VERSION - Complete TLDR Documentation"
+  echo "  $TOOL_NAME v$TOOL_VERSION - Complete TLDR Documentation"
   echo "════════════════════════════════════════════════════════════════════════════════"
   echo ""
-  echo "  $SUMMARY"
-  echo ""
   echo "  Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-  echo "  TLDR Spec: v0.1"
+  echo "  TLDR Spec: v0.2"
   echo "  Commands: $TOTAL_COMMANDS total"
   echo ""
   echo "════════════════════════════════════════════════════════════════════════════════"
   echo ""
 
-  # Global index
-  echo "GLOBAL INDEX"
+  # Raw TLDR output
+  echo "RAW TLDR OUTPUT (NDJSON FORMAT)"
   echo "────────────────────────────────────────────────────────────────────────────────"
-  echo "$GLOBAL_TLDR"
+  cat "$TEMP_DIR/tldr_raw.txt"
   echo ""
   echo "════════════════════════════════════════════════════════════════════════════════"
   echo ""
 
-  # Categorize commands
+  # Command index
   echo "COMMAND INDEX"
   echo "────────────────────────────────────────────────────────────────────────────────"
+  echo ""
 
   declare -A CATEGORIES
   TOP_LEVEL=()
 
-  for cmd in "${CMD_ARRAY[@]}"; do
-    cmd=$(echo "$cmd" | xargs)
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
 
-    if [[ "$cmd" == *.* ]]; then
+    CMD_NAME=$(json_value "$line" "cmd")
+    PURPOSE=$(json_value "$line" "p")
+
+    if [[ "$CMD_NAME" == *.* ]]; then
       # Namespaced command (e.g., "node.read")
-      prefix=$(echo "$cmd" | cut -d. -f1)
-      CATEGORIES[$prefix]+="$cmd "
+      prefix=$(echo "$CMD_NAME" | cut -d. -f1)
+      CATEGORIES[$prefix]+="$CMD_NAME|$PURPOSE;"
     else
       # Top-level command
-      TOP_LEVEL+=("$cmd")
+      TOP_LEVEL+=("$CMD_NAME|$PURPOSE")
     fi
-  done
+  done < "$TEMP_DIR/commands.ndjson"
 
   if [[ ${#TOP_LEVEL[@]} -gt 0 ]]; then
-    echo ""
     echo "[Top-Level Commands]"
-    printf "  %s\n" "${TOP_LEVEL[@]}" | sort
+    for item in "${TOP_LEVEL[@]}"; do
+      cmd=$(echo "$item" | cut -d'|' -f1)
+      purpose=$(echo "$item" | cut -d'|' -f2)
+      printf "  %-20s  %s\n" "$cmd" "$purpose"
+    done
+    echo ""
   fi
 
   for category in $(printf '%s\n' "${!CATEGORIES[@]}" | sort); do
-    echo ""
     echo "[${category^} Commands]"
-    for cmd in ${CATEGORIES[$category]}; do
-      echo "  $cmd"
+    IFS=';' read -ra ITEMS <<< "${CATEGORIES[$category]}"
+    for item in "${ITEMS[@]}"; do
+      [[ -z "$item" ]] && continue
+      cmd=$(echo "$item" | cut -d'|' -f1)
+      purpose=$(echo "$item" | cut -d'|' -f2)
+      printf "  %-20s  %s\n" "$cmd" "$purpose"
     done
+    echo ""
   done
 
-  echo ""
   echo "════════════════════════════════════════════════════════════════════════════════"
   echo ""
 
-  # Command details
-  echo "COMMAND DETAILS"
+  # Command details (pretty-printed JSON)
+  echo "COMMAND DETAILS (FORMATTED)"
   echo "════════════════════════════════════════════════════════════════════════════════"
 
-  for cmd in "${CMD_ARRAY[@]}"; do
-    cmd=$(echo "$cmd" | xargs)
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
 
-    # Convert dot notation to space
-    CMD_ARGS=${cmd//./ }
+    CMD_NAME=$(json_value "$line" "cmd")
 
     echo ""
-    echo ">>> $cmd <<<"
+    echo ">>> $CMD_NAME <<<"
     echo "────────────────────────────────────────────────────────────────────────────────"
 
-    # Fetch command TLDR (with error handling)
-    if CMD_TLDR=$($CLI $CMD_ARGS --tldr 2>&1); then
-      echo "$CMD_TLDR"
-    else
-      echo "ERROR: Failed to fetch TLDR for command '$cmd'"
-      echo "$CMD_TLDR"
-    fi
+    # Pretty-print JSON (basic indentation)
+    echo "$line" | sed 's/,"/,\n  "/g' | sed 's/^{/{  /' | sed 's/}$/  }/'
 
     echo ""
-  done
+  done < "$TEMP_DIR/commands.ndjson"
 
   # Footer
   echo "════════════════════════════════════════════════════════════════════════════════"
-  echo "  End of $NAME TLDR Documentation"
-  echo "  Generated by: tldr-doc-gen.sh (TLDR v0.1 Universal Generator)"
+  echo "  End of $TOOL_NAME TLDR Documentation"
+  echo "  Generated by: tldr-doc-gen.sh (TLDR v0.2 Universal Generator)"
   echo "════════════════════════════════════════════════════════════════════════════════"
 
 } > "$OUTPUT"
