@@ -4,69 +4,93 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-TLDR v0.1 is an agent-first command metadata standard that enables AI agents to discover and use CLIs through a minimal, parseable wire format. This repository contains:
+TLDR v0.2 is an agent-first command metadata standard using NDJSON with explicit field mappings. AI agents discover and use CLIs through a single `--tldr` call. This repository contains:
 
-- **Specification**: [docs/spec-v0.1.md](docs/spec-v0.1.md) - Formal TLDR v0.1 standard
+- **Specification**: [docs/spec-v0.2.md](docs/spec-v0.2.md) - Formal TLDR v0.2 standard
+- **Keymap Library**: [docs/keymap-stdlib.md](docs/keymap-stdlib.md) - Standard 1-2 letter field reference
 - **Generators**: [scripts/](scripts/) - Three universal documentation/validation tools
-- **Examples**: [docs/examples/](docs/examples/) - Real-world TLDR output
-- **Reference Implementation**: [reference-implementations/forest/](reference-implementations/forest/) - TypeScript example
+- **Examples**: [docs/examples/](docs/examples/) - Real-world TLDR v0.2 output
+- **Migration Guide**: [reference-implementations/forest/MIGRATION_V02.md](reference-implementations/forest/MIGRATION_V02.md)
 
 ## Quick Start for Agents
 
 ```bash
-# Discover all commands in a TLDR-compliant CLI
+# Single call returns ALL commands with full metadata (NDJSON format)
 $ <cli> --tldr
-# Returns: NAME, VERSION, SUMMARY, COMMANDS (comma-separated), TLDR_CALL
-
-# Get detailed metadata for a specific command
-$ <cli> <command> --tldr
-# Returns: CMD, PURPOSE, INPUTS, OUTPUTS, SIDE_EFFECTS, FLAGS, EXAMPLES, RELATED
+# Returns:
+# Line 1: --- tool: <name> ---
+# Line 2: # meta: tool=<name>, version=<ver>, keymap={...}
+# Line 3+: {"cmd":"<name>","p":"<purpose>",...} (one JSON per line)
 ```
 
-**Key principle**: One flag (`--tldr`) unlocks the entire CLI surface in structured, minimal format.
+**Example**:
+```bash
+$ git --tldr
+--- tool: git ---
+# meta: tool=git, version=2.46, keymap={cmd:command,p:purpose,in:inputs,...}
+{"cmd":"init","p":"Create an empty repository",...}
+{"cmd":"clone","p":"Clone an existing repository",...}
+{"cmd":"commit","p":"Record staged changes",...}
+```
+
+**Key principles**:
+- **Single call**: One `--tldr` gets all commands
+- **Deterministic**: Keymap explicitly defines field meanings
+- **Compact**: 40% fewer tokens than v0.1
 
 ## File Structure
 
 ```
 tldr-agent-spec/
-├── README.md                    # Main entry point
-├── CLAUDE.md                    # This file (agent guidance)
-├── LICENSE                      # Public domain
+├── README.md                          # Main entry point
+├── CLAUDE.md                          # This file (agent guidance)
+├── LICENSE                            # Public domain
 ├── docs/
-│   ├── spec-v0.1.md            # Formal specification
+│   ├── spec-v0.2.md                  # Formal TLDR v0.2 specification
+│   ├── keymap-stdlib.md              # Standard 1-2 letter keymap library
 │   └── examples/
-│       └── forest_complete.txt  # Full Forest CLI documentation (19KB, 365 lines)
+│       └── git_v02_example.txt       # Git CLI example (v0.2 format)
 ├── scripts/
-│   ├── tldr-doc-gen.sh         # Bash generator (universal)
-│   ├── tldr-doc-gen.js         # Node.js generator (multi-format)
-│   ├── tldr-doc-gen.py         # Python generator (analytics)
-│   ├── README.md               # Generator comparison
-│   └── test-all.sh             # Test harness
+│   ├── tldr-doc-gen.sh               # Bash generator (zero dependencies)
+│   ├── tldr-doc-gen.js               # Node.js generator (multi-format)
+│   ├── tldr-doc-gen.py               # Python generator (analytics)
+│   ├── README.md                     # Generator comparison
+│   └── test-all.sh                   # Test harness
 └── reference-implementations/
     └── forest/
-        ├── README.md           # Forest implementation guide
-        └── tldr.ts             # Complete TypeScript implementation
+        └── MIGRATION_V02.md          # v0.1 → v0.2 migration guide
 ```
 
-## TLDR Wire Format (Quick Reference)
+## TLDR v0.2 Wire Format (Quick Reference)
 
-### ASCII Mode
+### NDJSON Format
 ```
-KEY: value
+--- tool: <name> ---
+# meta: tool=<name>, version=<semver>, keymap={<short:full,...>}
+{"cmd":"<name>","p":"<purpose>","in":[...],"out":[...],...}
+{"cmd":"<name>","p":"<purpose>",...}
 ```
-- Uppercase keys, no blank lines
-- Lists: comma-separated (COMMANDS, INPUTS, OUTPUTS, RELATED)
-- Flags: semicolon-separated `--name=TYPE[=DEFAULT]|description`
-- Examples: pipe-separated commands
 
-### JSON Mode (Optional)
-Same schema as ASCII, uppercase keys preserved:
+1. **Tool delimiter** (line 1): `--- tool: <name> ---`
+2. **Metadata header** (line 2): `# meta: tool=<name>, version=<ver>, keymap=<JSON>`
+3. **Command records** (line 3+): One JSON object per line (NDJSON)
+
+### Keymap
+The metadata line includes a `keymap` JSON object that maps short keys to full field names:
+
 ```json
 {
-  "CMD": "capture",
-  "FLAGS": [{"name": "stdin", "type": "BOOL", "default": false, "desc": "read from stdin"}]
+  "cmd": "command",
+  "p": "purpose",
+  "in": "inputs",
+  "out": "outputs",
+  "fl": "flags",
+  "effects": "side_effects",
+  "example": "example_command"
 }
 ```
+
+**Decoders (AI agents)**: Use the keymap to interpret ALL fields. Do NOT infer meanings beyond the explicit mappings.
 
 ## Validation & Documentation
 
@@ -87,62 +111,66 @@ python3 scripts/tldr-doc-gen.py <cli> --analyze  # Console analytics
 python3 scripts/tldr-doc-gen.py <cli>  # → <cli>_tldr_analytics.json + <cli>_tldr_report.html
 ```
 
-## Required Fields
+## Required Fields (v0.2)
 
-**Global index** (`<cli> --tldr`):
-- `NAME`: CLI name
-- `VERSION`: Semantic version
-- `SUMMARY`: One-line description
-- `COMMANDS`: Comma-separated list (use dots for namespacing: `node.read`)
-- `TLDR_CALL`: Template for per-command TLDR
+**Metadata header** (required in `# meta:` line):
+- `tool`: Tool name
+- `version`: Semantic version
+- `keymap`: JSON object mapping short keys to full names
 
-**Per-command** (`<cli> <command> --tldr`):
-- `CMD`: Command name (matches COMMANDS list entry)
-- `PURPOSE`: One-line description
-- `INPUTS`: Input channels (ARGS, STDIN, FILE, ENV, none)
-- `OUTPUTS`: What the command produces
-- `SIDE_EFFECTS`: Mutations (DB writes, network, file I/O, or "none (read-only)")
-- `FLAGS`: Semicolon-separated flag definitions
-- `EXAMPLES`: Pipe-separated working examples
-- `RELATED`: Comma-separated related command names
+**Command records** (required in each JSON line):
+- `cmd` (or keymap equivalent): Command name
+- `p` (or keymap equivalent): Purpose/description
 
-**Optional**:
-- `SCHEMA_JSON`: Description of JSON output schema (for `--json` flags)
+**Recommended fields** (use keymap standard library):
+- `in`: Input parameters (array of objects)
+- `out`: Outputs (array of objects)
+- `fl`: Flags (array of objects)
+- `effects`: Side effects (array of strings)
+- `example`: Example command (string)
+- `related`: Related commands (array of strings)
 
-## Flag Types
+See [docs/keymap-stdlib.md](docs/keymap-stdlib.md) for complete field reference.
+
+## Type System (v0.2)
 
 | Type | Description | Example |
 |------|-------------|---------|
-| STR | String value | `--title=STR\|note title` |
-| BOOL | Boolean flag | `--watch=BOOL=false\|enable watch mode` |
-| INT | Integer | `--limit=INT=10\|max results` |
-| FLOAT | Float | `--threshold=FLOAT=0.5\|score threshold` |
-| FILE | File path | `--config=FILE\|config file path` |
-| LIST | Comma-list | `--tags=LIST\|comma-separated tags` |
-| STDIN | Stdin input | `--stdin=BOOL=false\|read from stdin` |
+| `str` | String value | `{"n":"title","t":"str"}` |
+| `int` | Integer | `{"n":"limit","t":"int","d":10}` |
+| `float` | Floating point | `{"n":"threshold","t":"float"}` |
+| `bool` | Boolean flag | `{"n":"watch","t":"bool","d":false}` |
+| `file` | File path | `{"n":"config","t":"file"}` |
+| `dir` | Directory path | `{"n":"output","t":"dir"}` |
+| `list` | Array | `{"n":"tags","t":"list"}` |
+| `enum` | Choice | `{"n":"format","t":"enum","vals":["json","yaml"]}` |
 
-## Implementation Checklist
+## Implementation Checklist (v0.2)
 
-When implementing TLDR in a CLI:
+When implementing TLDR v0.2 in a CLI:
 
-1. ✅ Add `--tldr` flag to root command
-2. ✅ Add `--tldr` flag to every command
-3. ✅ Create metadata registry (see `reference-implementations/forest/tldr.ts`)
-4. ✅ Wire up flag detection (check before running business logic)
-5. ✅ Emit TLDR and exit (use `emitTldrAndExit()` pattern)
-6. ✅ Validate: `./scripts/tldr-doc-gen.sh <your-cli> --validate`
-7. ✅ Generate docs: `./scripts/tldr-doc-gen.sh <your-cli>`
+1. ✅ Define keymap (use standard library from `docs/keymap-stdlib.md`)
+2. ✅ Create metadata registry with short keys
+3. ✅ Add `--tldr` flag handler to root command
+4. ✅ Emit tool delimiter: `--- tool: <name> ---`
+5. ✅ Emit metadata header: `# meta: tool=<name>, version=<ver>, keymap=<JSON>`
+6. ✅ Emit command records: One JSON object per line (NDJSON)
+7. ✅ Validate: `./scripts/tldr-doc-gen.sh <your-cli> --validate`
+8. ✅ Generate docs: `./scripts/tldr-doc-gen.sh <your-cli>`
+
+See [reference-implementations/forest/MIGRATION_V02.md](reference-implementations/forest/MIGRATION_V02.md) for detailed migration guide.
 
 ## Modifying the Spec
 
-If proposing changes to TLDR v0.1:
+If proposing changes to TLDR v0.2:
 
-1. Update `docs/spec-v0.1.md` with your proposal
+1. Update `docs/spec-v0.2.md` with your proposal
 2. Update generators in `scripts/` to support the change
-3. Update Forest reference implementation if needed
-4. Regenerate examples: `./scripts/tldr-doc-gen.sh forest`
+3. Update keymap standard library (`docs/keymap-stdlib.md`) if adding new fields
+4. Update migration guide if change affects v0.1 → v0.2 migration
 5. Test all three generators still work
 6. Document breaking vs. non-breaking changes
+7. Prefer non-breaking extensions via optional fields
 
 ## Design Principles
 
@@ -152,25 +180,28 @@ If proposing changes to TLDR v0.1:
 4. **Self-documenting**: Types, defaults, examples inline
 5. **Zero dependencies**: Plain ASCII, standard formats (JSON optional)
 
-## Common Patterns
+## Common Patterns (v0.2)
 
-**Namespaced commands**: Use dots in COMMANDS list, spaces for invocation
+**Namespaced commands**: Use dots in command names
+```json
+{"cmd":"node.read","p":"Display a node's content",...}
+{"cmd":"node.edit","p":"Edit a node's content",...}
 ```
-COMMANDS: node.read,node.edit
-$ cli node read  # (not cli node.read)
+Invocation: `$ cli node read <id>` (not `cli node.read`)
+
+**Side effects**: Use structured descriptors
+```json
+{"effects":["db:write","compute:embeddings"],"idempotent":false}
+{"effects":["none"]}
+{"effects":["network:read","filesystem:write"]}
 ```
 
-**Parameter commands**: Provide dummy param to access TLDR
-```
-$ cli read --tldr          # Error: missing required param
-$ cli read <id> --tldr     # Works (TLDR checked before param validation)
-```
-
-**Side effects**: Be specific and honest
-```
-SIDE_EFFECTS: writes to SQLite DB,computes embeddings,creates edges
-SIDE_EFFECTS: none (read-only)
-SIDE_EFFECTS: network (HTTP GET to api.example.com)
+**Required vs. optional inputs**:
+```json
+{"in":[
+  {"n":"id","t":"str","req":1},           // Required
+  {"n":"limit","t":"int","d":10}          // Optional with default
+]}
 ```
 
 ## Testing
@@ -187,11 +218,13 @@ python3 scripts/tldr-doc-gen.py forest --validate
 
 ## Resources
 
-- **Spec**: [docs/spec-v0.1.md](docs/spec-v0.1.md)
-- **Forest CLI** (reference impl): https://github.com/bwl/forest
+- **Spec**: [docs/spec-v0.2.md](docs/spec-v0.2.md)
+- **Keymap Standard Library**: [docs/keymap-stdlib.md](docs/keymap-stdlib.md)
+- **Migration Guide**: [reference-implementations/forest/MIGRATION_V02.md](reference-implementations/forest/MIGRATION_V02.md)
 - **Generator comparison**: [scripts/README.md](scripts/README.md)
-- **Example output**: [docs/examples/forest_complete.txt](docs/examples/forest_complete.txt)
+- **Example output**: [docs/examples/git_v02_example.txt](docs/examples/git_v02_example.txt)
+- **Forest CLI**: https://github.com/bwl/forest (v0.1, will migrate to v0.2)
 
 ---
 
-**For questions about implementing TLDR in your CLI**: Check `reference-implementations/forest/README.md` and `tldr.ts` for a complete working example.
+**For questions about implementing TLDR v0.2**: Check [reference-implementations/forest/MIGRATION_V02.md](reference-implementations/forest/MIGRATION_V02.md) for complete migration guide with examples.

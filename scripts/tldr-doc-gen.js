@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * tldr-doc-gen.js - Universal TLDR v0.1 Documentation Generator (Node.js)
+ * tldr-doc-gen.js - Universal TLDR v0.2 Documentation Generator (Node.js)
  *
- * Generates comprehensive documentation for any CLI implementing the TLDR standard.
+ * Generates comprehensive documentation for any CLI implementing the TLDR v0.2 standard.
  * Produces multiple output formats with advanced validation and dependency analysis.
  *
  * Usage:
@@ -20,8 +20,8 @@
  *   <cli>_tldr.json - Structured JSON with analytics
  *
  * Features:
- *   - Validates ASCII/JSON consistency
- *   - Analyzes dependency graph from RELATED fields
+ *   - Validates NDJSON format and keymap compliance
+ *   - Analyzes dependency graph from related fields
  *   - Categorizes commands by namespace
  *   - Advanced validation with detailed error reporting
  *   - Multiple output formats for different use cases
@@ -66,98 +66,127 @@ function isCommandAvailable(cli) {
 }
 
 /**
- * Parse ASCII TLDR format to structured object
+ * Parse TLDR v0.2 NDJSON output
  */
-function parseAsciiTldr(ascii) {
-  const lines = ascii.split('\n');
-  const parsed = {};
+function parseTldrOutput(output) {
+  const lines = output.split('\n');
 
-  for (const line of lines) {
-    const match = line.match(/^([A-Z_]+):\s*(.*)$/);
-    if (match) {
-      const [, key, value] = match;
-      parsed[key] = value.trim();
+  if (lines.length < 2) {
+    throw new Error('Invalid TLDR output: too few lines');
+  }
+
+  // Parse tool delimiter
+  const toolDelimiter = lines[0];
+  const toolMatch = toolDelimiter.match(/^---\s+tool:\s+(.+)\s+---$/);
+  if (!toolMatch) {
+    throw new Error(`Invalid tool delimiter: ${toolDelimiter}`);
+  }
+  const toolName = toolMatch[1];
+
+  // Parse metadata header
+  const metaLine = lines[1];
+  if (!metaLine.startsWith('# meta:')) {
+    throw new Error(`Invalid metadata line: ${metaLine}`);
+  }
+
+  const metaContent = metaLine.substring(7).trim(); // Remove '# meta:'
+  const versionMatch = metaContent.match(/version=([^,]+)/);
+  const keymapMatch = metaContent.match(/keymap=(\{[^}]+\})/);
+
+  if (!versionMatch || !keymapMatch) {
+    throw new Error('Metadata missing version or keymap');
+  }
+
+  const version = versionMatch[1];
+  const keymap = JSON.parse(keymapMatch[1]);
+
+  // Parse command records (skip first 2 lines)
+  const commands = [];
+  for (let i = 2; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === '') continue;
+
+    try {
+      const cmd = JSON.parse(line);
+      commands.push(cmd);
+    } catch (error) {
+      throw new Error(`Invalid JSON on line ${i + 1}: ${line}`);
     }
   }
 
-  return parsed;
+  return {
+    toolName,
+    version,
+    keymap,
+    commands,
+    rawOutput: output
+  };
 }
 
 /**
- * Parse FLAGS field into structured array
+ * Resolve field name using keymap
  */
-function parseFlags(flagsString) {
-  if (!flagsString) return [];
-
-  return flagsString.split(';').map(flag => {
-    const parts = flag.trim().split('|');
-    if (parts.length < 2) return null;
-
-    const [signature, description] = parts;
-    const match = signature.match(/^--([^=]+)(?:=([^=]+)(?:=(.+))?)?$/);
-
-    if (!match) return null;
-
-    const [, name, type, defaultValue] = match;
-    return {
-      name,
-      type: type || 'BOOL',
-      default: defaultValue,
-      description: description.trim()
-    };
-  }).filter(Boolean);
+function resolveField(record, shortKey, keymap) {
+  // Return the value directly since NDJSON uses short keys
+  return record[shortKey];
 }
 
 /**
- * Parse EXAMPLES field into array
+ * Get command name from record
  */
-function parseExamples(examplesString) {
-  if (!examplesString) return [];
-  return examplesString.split('|').map(ex => ex.trim()).filter(Boolean);
+function getCommandName(record) {
+  return record.cmd || record.command;
 }
 
 /**
- * Parse RELATED field into array
+ * Get purpose from record
  */
-function parseRelated(relatedString) {
-  if (!relatedString) return [];
-  return relatedString.split(',').map(r => r.trim()).filter(Boolean);
+function getPurpose(record) {
+  return record.p || record.purpose;
 }
 
 /**
- * Validate consistency between ASCII and JSON TLDR outputs
+ * Get related commands from record
  */
-function validateTldrFormat(ascii, json, commandName) {
+function getRelated(record) {
+  const related = record.related || [];
+  return Array.isArray(related) ? related : [];
+}
+
+/**
+ * Validate TLDR format
+ */
+function validateTldrFormat(parsed) {
   const errors = [];
   const warnings = [];
 
-  const parsedAscii = parseAsciiTldr(ascii);
+  // Validate metadata
+  if (!parsed.toolName) {
+    errors.push('Missing tool name in delimiter');
+  }
+  if (!parsed.version) {
+    errors.push('Missing version in metadata');
+  }
+  if (!parsed.keymap) {
+    errors.push('Missing keymap in metadata');
+  }
 
-  // Check required fields in ASCII
-  const requiredFields = ['CMD', 'PURPOSE'];
-  for (const field of requiredFields) {
-    if (!parsedAscii[field]) {
-      errors.push(`Missing required field: ${field}`);
+  // Validate commands
+  for (let i = 0; i < parsed.commands.length; i++) {
+    const cmd = parsed.commands[i];
+    const cmdName = getCommandName(cmd);
+    const purpose = getPurpose(cmd);
+
+    if (!cmdName) {
+      errors.push(`Command ${i + 1} missing 'cmd' field`);
     }
-  }
+    if (!purpose) {
+      warnings.push(`Command '${cmdName || i + 1}' missing 'p' (purpose) field`);
+    }
 
-  // Validate CMD matches command name
-  if (parsedAscii.CMD && parsedAscii.CMD !== commandName) {
-    warnings.push(`CMD field mismatch: expected '${commandName}', got '${parsedAscii.CMD}'`);
-  }
-
-  // Note: Current Forest implementation returns ASCII for both modes
-  // Future TLDR v0.1 implementations may provide proper JSON output
-  // For now, we validate that JSON output exists and is parseable as ASCII
-  if (json !== ascii) {
-    try {
-      JSON.parse(json);
-      // If it's valid JSON but different from ASCII, that's also acceptable
-    } catch (error) {
-      // If JSON parsing fails but outputs match, that's fine (ASCII mode)
-      if (json !== ascii) {
-        warnings.push(`JSON mode output differs but is not valid JSON`);
-      }
+    // Validate JSON structure
+    if (typeof cmd !== 'object') {
+      errors.push(`Command ${i + 1} is not a valid object`);
     }
   }
 
@@ -165,22 +194,23 @@ function validateTldrFormat(ascii, json, commandName) {
 }
 
 /**
- * Build dependency graph from RELATED fields
+ * Build dependency graph from related fields
  */
 function buildDependencyGraph(commands) {
   const graph = {};
   const incomingEdges = {};
 
   for (const cmd of commands) {
-    const related = parseRelated(cmd.related);
-    graph[cmd.name] = related;
+    const cmdName = getCommandName(cmd);
+    const related = getRelated(cmd);
+    graph[cmdName] = related;
 
     // Track incoming edges (reverse dependencies)
     for (const relatedCmd of related) {
       if (!incomingEdges[relatedCmd]) {
         incomingEdges[relatedCmd] = [];
       }
-      incomingEdges[relatedCmd].push(cmd.name);
+      incomingEdges[relatedCmd].push(cmdName);
     }
   }
 
@@ -189,10 +219,13 @@ function buildDependencyGraph(commands) {
     incoming: incomingEdges,
     // Calculate centrality (total edges)
     centrality: Object.fromEntries(
-      commands.map(cmd => [
-        cmd.name,
-        (graph[cmd.name] || []).length + (incomingEdges[cmd.name] || []).length
-      ])
+      commands.map(cmd => {
+        const name = getCommandName(cmd);
+        return [
+          name,
+          (graph[name] || []).length + (incomingEdges[name] || []).length
+        ];
+      })
     )
   };
 }
@@ -207,8 +240,9 @@ function categorizeCommands(commands) {
   };
 
   for (const cmd of commands) {
-    if (cmd.name.includes('.')) {
-      const [namespace] = cmd.name.split('.');
+    const name = getCommandName(cmd);
+    if (name.includes('.')) {
+      const [namespace] = name.split('.');
       if (!categories.namespaced[namespace]) {
         categories.namespaced[namespace] = [];
       }
@@ -229,42 +263,66 @@ function analyzeFlagTypes(commands) {
   let totalFlags = 0;
 
   for (const cmd of commands) {
-    const flags = parseFlags(cmd.flags);
+    const flags = cmd.fl || cmd.flags || [];
     totalFlags += flags.length;
 
     for (const flag of flags) {
-      types[flag.type] = (types[flag.type] || 0) + 1;
+      const type = flag.t || flag.type || 'unknown';
+      types[type] = (types[type] || 0) + 1;
     }
   }
 
   return {
     distribution: types,
     total: totalFlags,
-    averagePerCommand: (totalFlags / commands.length).toFixed(2)
+    averagePerCommand: commands.length > 0 ? (totalFlags / commands.length).toFixed(2) : 0
+  };
+}
+
+/**
+ * Analyze side effects distribution
+ */
+function analyzeSideEffects(commands) {
+  const effects = {};
+  let totalCommands = 0;
+
+  for (const cmd of commands) {
+    const sideEffects = cmd.effects || cmd.side_effects || [];
+    if (sideEffects.length > 0) {
+      totalCommands++;
+      for (const effect of sideEffects) {
+        effects[effect] = (effects[effect] || 0) + 1;
+      }
+    }
+  }
+
+  return {
+    distribution: effects,
+    commandsWithEffects: totalCommands,
+    commandsWithoutEffects: commands.length - totalCommands
   };
 }
 
 /**
  * Generate Markdown documentation with TOC
  */
-function generateMarkdownDocs(data) {
+function generateMarkdownDocs(parsed) {
   const lines = [];
 
   // Header
-  lines.push(`# ${data.name} v${data.version} - TLDR Documentation\n`);
-  lines.push(`${data.summary}\n`);
-  lines.push(`**Generated:** ${data.generated}`);
-  lines.push(`**TLDR Spec:** v0.1`);
-  lines.push(`**Commands:** ${data.commands.length} total\n`);
+  lines.push(`# ${parsed.toolName} v${parsed.version} - TLDR Documentation\n`);
+  lines.push(`**Generated:** ${new Date().toISOString()}`);
+  lines.push(`**TLDR Spec:** v0.2`);
+  lines.push(`**Commands:** ${parsed.commands.length} total\n`);
   lines.push('---\n');
 
   // Table of Contents
   lines.push('## Table of Contents\n');
-  lines.push('- [Global Index](#global-index)');
+  lines.push('- [Metadata](#metadata)');
   lines.push('- [Command Categories](#command-categories)');
   lines.push('- [Command Details](#command-details)');
 
-  const categories = categorizeCommands(data.commands);
+  const categories = categorizeCommands(parsed.commands);
   if (categories['top-level'].length > 0) {
     lines.push('  - [Top-Level Commands](#top-level-commands)');
   }
@@ -276,10 +334,13 @@ function generateMarkdownDocs(data) {
   lines.push('- [Analytics](#analytics)\n');
   lines.push('---\n');
 
-  // Global Index
-  lines.push('## Global Index\n');
-  lines.push('```');
-  lines.push(data.globalIndex);
+  // Metadata
+  lines.push('## Metadata\n');
+  lines.push(`**Tool:** ${parsed.toolName}`);
+  lines.push(`**Version:** ${parsed.version}`);
+  lines.push(`**Keymap:**`);
+  lines.push('```json');
+  lines.push(JSON.stringify(parsed.keymap, null, 2));
   lines.push('```\n');
 
   // Command Categories
@@ -287,16 +348,16 @@ function generateMarkdownDocs(data) {
 
   if (categories['top-level'].length > 0) {
     lines.push('### Top-Level Commands\n');
-    for (const cmd of categories['top-level'].sort((a, b) => a.name.localeCompare(b.name))) {
-      lines.push(`- **${cmd.name}** - ${cmd.purpose}`);
+    for (const cmd of categories['top-level'].sort((a, b) => getCommandName(a).localeCompare(getCommandName(b)))) {
+      lines.push(`- **${getCommandName(cmd)}** - ${getPurpose(cmd)}`);
     }
     lines.push('');
   }
 
   for (const namespace of Object.keys(categories.namespaced).sort()) {
     lines.push(`### ${namespace} Commands\n`);
-    for (const cmd of categories.namespaced[namespace].sort((a, b) => a.name.localeCompare(b.name))) {
-      lines.push(`- **${cmd.name}** - ${cmd.purpose}`);
+    for (const cmd of categories.namespaced[namespace].sort((a, b) => getCommandName(a).localeCompare(getCommandName(b)))) {
+      lines.push(`- **${getCommandName(cmd)}** - ${getPurpose(cmd)}`);
     }
     lines.push('');
   }
@@ -304,61 +365,89 @@ function generateMarkdownDocs(data) {
   // Command Details
   lines.push('## Command Details\n');
 
-  for (const cmd of data.commands) {
-    lines.push(`### \`${cmd.name}\`\n`);
-    lines.push(`**Purpose:** ${cmd.purpose}\n`);
+  for (const cmd of parsed.commands) {
+    const name = getCommandName(cmd);
+    const purpose = getPurpose(cmd);
+    lines.push(`### \`${name}\`\n`);
+    lines.push(`**Purpose:** ${purpose}\n`);
 
-    if (cmd.inputs) {
-      lines.push(`**Inputs:** ${cmd.inputs}\n`);
-    }
-
-    if (cmd.outputs) {
-      lines.push(`**Outputs:** ${cmd.outputs}\n`);
-    }
-
-    if (cmd.sideEffects) {
-      lines.push(`**Side Effects:** ${cmd.sideEffects}\n`);
-    }
-
-    const flags = parseFlags(cmd.flags);
-    if (flags.length > 0) {
-      lines.push('**Flags:**\n');
-      for (const flag of flags) {
-        const defaultStr = flag.default ? ` (default: ${flag.default})` : '';
-        lines.push(`- \`--${flag.name}\` (${flag.type}${defaultStr}) - ${flag.description}`);
+    // Inputs
+    if (cmd.in || cmd.inputs) {
+      const inputs = cmd.in || cmd.inputs;
+      lines.push('**Inputs:**\n');
+      for (const input of inputs) {
+        const req = input.req || input.required ? ' (required)' : '';
+        const def = input.d || input.default ? ` (default: ${input.d || input.default})` : '';
+        lines.push(`- \`${input.n || input.name}\` (${input.t || input.type}${req}${def})`);
       }
       lines.push('');
     }
 
-    const examples = parseExamples(cmd.examples);
-    if (examples.length > 0) {
-      lines.push('**Examples:**\n');
-      for (const example of examples) {
-        lines.push('```bash');
-        lines.push(example);
-        lines.push('```');
+    // Outputs
+    if (cmd.out || cmd.outputs) {
+      const outputs = cmd.out || cmd.outputs;
+      lines.push('**Outputs:**\n');
+      for (const output of outputs) {
+        lines.push(`- \`${output.n || output.name}\` (${output.t || output.type})`);
       }
       lines.push('');
     }
 
-    const related = parseRelated(cmd.related);
+    // Side Effects
+    if (cmd.effects || cmd.side_effects) {
+      const effects = cmd.effects || cmd.side_effects;
+      lines.push(`**Side Effects:** ${effects.join(', ')}\n`);
+    }
+
+    // Flags
+    if (cmd.fl || cmd.flags) {
+      const flags = cmd.fl || cmd.flags;
+      if (flags.length > 0) {
+        lines.push('**Flags:**\n');
+        for (const flag of flags) {
+          const name = flag.n || flag.name;
+          const type = flag.t || flag.type;
+          const def = flag.d !== undefined ? ` (default: ${flag.d})` : '';
+          const alias = flag.al || flag.alias ? ` (alias: ${flag.al || flag.alias})` : '';
+          const desc = flag.desc || flag.description || '';
+          lines.push(`- \`--${name}\` (${type}${def}${alias}) - ${desc}`);
+        }
+        lines.push('');
+      }
+    }
+
+    // Examples
+    if (cmd.example || cmd.examples) {
+      const examples = cmd.example ? [cmd.example] : (cmd.examples || []);
+      if (examples.length > 0) {
+        lines.push('**Examples:**\n');
+        for (const example of examples) {
+          lines.push('```bash');
+          lines.push(example);
+          lines.push('```');
+        }
+        lines.push('');
+      }
+    }
+
+    // Related
+    const related = getRelated(cmd);
     if (related.length > 0) {
       lines.push(`**Related:** ${related.map(r => `\`${r}\``).join(', ')}\n`);
     }
 
-    if (cmd.schemaJson) {
-      lines.push('**Output Schema:**\n');
-      lines.push('```');
-      lines.push(cmd.schemaJson);
-      lines.push('```\n');
-    }
+    // Raw JSON
+    lines.push('**Raw JSON:**\n');
+    lines.push('```json');
+    lines.push(JSON.stringify(cmd, null, 2));
+    lines.push('```\n');
 
     lines.push('---\n');
   }
 
   // Dependency Graph
   lines.push('## Dependency Graph\n');
-  const graph = buildDependencyGraph(data.commands);
+  const graph = buildDependencyGraph(parsed.commands);
 
   lines.push('### Most Connected Commands\n');
   const sortedByCentrality = Object.entries(graph.centrality)
@@ -377,13 +466,21 @@ function generateMarkdownDocs(data) {
   // Analytics
   lines.push('## Analytics\n');
 
-  const flagAnalysis = analyzeFlagTypes(data.commands);
+  const flagAnalysis = analyzeFlagTypes(parsed.commands);
   lines.push('### Flag Type Distribution\n');
   for (const [type, count] of Object.entries(flagAnalysis.distribution).sort((a, b) => b[1] - a[1])) {
     lines.push(`- **${type}**: ${count} flags`);
   }
   lines.push(`\n**Total Flags:** ${flagAnalysis.total}`);
   lines.push(`**Average per Command:** ${flagAnalysis.averagePerCommand}\n`);
+
+  const sideEffectAnalysis = analyzeSideEffects(parsed.commands);
+  lines.push('### Side Effects Distribution\n');
+  for (const [effect, count] of Object.entries(sideEffectAnalysis.distribution).sort((a, b) => b[1] - a[1])) {
+    lines.push(`- **${effect}**: ${count} commands`);
+  }
+  lines.push(`\n**Commands with side effects:** ${sideEffectAnalysis.commandsWithEffects}`);
+  lines.push(`**Commands without side effects:** ${sideEffectAnalysis.commandsWithoutEffects}\n`);
 
   const namespaceCount = Object.keys(categories.namespaced).length;
   lines.push('### Command Distribution\n');
@@ -400,7 +497,7 @@ function generateMarkdownDocs(data) {
 /**
  * Generate ASCII text documentation
  */
-function generateTextDocs(data) {
+function generateTextDocs(parsed) {
   const lines = [];
   const width = 80;
   const hr = '='.repeat(width);
@@ -408,22 +505,20 @@ function generateTextDocs(data) {
 
   // Header
   lines.push(hr);
-  lines.push(`  ${data.name} v${data.version} - Complete TLDR Documentation`);
+  lines.push(`  ${parsed.toolName} v${parsed.version} - Complete TLDR Documentation`);
   lines.push(hr);
   lines.push('');
-  lines.push(`  ${data.summary}`);
-  lines.push('');
-  lines.push(`  Generated: ${data.generated}`);
-  lines.push('  TLDR Spec: v0.1');
-  lines.push(`  Commands: ${data.commands.length} total`);
+  lines.push(`  Generated: ${new Date().toISOString()}`);
+  lines.push('  TLDR Spec: v0.2');
+  lines.push(`  Commands: ${parsed.commands.length} total`);
   lines.push('');
   lines.push(hr);
   lines.push('');
 
-  // Global Index
-  lines.push('GLOBAL INDEX');
+  // Raw TLDR output
+  lines.push('RAW TLDR OUTPUT (NDJSON FORMAT)');
   lines.push(hr2);
-  lines.push(data.globalIndex);
+  lines.push(parsed.rawOutput);
   lines.push('');
   lines.push(hr);
   lines.push('');
@@ -432,21 +527,21 @@ function generateTextDocs(data) {
   lines.push('COMMAND INDEX');
   lines.push(hr2);
 
-  const categories = categorizeCommands(data.commands);
+  const categories = categorizeCommands(parsed.commands);
 
   if (categories['top-level'].length > 0) {
     lines.push('');
     lines.push('[Top-Level Commands]');
-    for (const cmd of categories['top-level'].sort((a, b) => a.name.localeCompare(b.name))) {
-      lines.push(`  ${cmd.name}`);
+    for (const cmd of categories['top-level'].sort((a, b) => getCommandName(a).localeCompare(getCommandName(b)))) {
+      lines.push(`  ${getCommandName(cmd)}`);
     }
   }
 
   for (const namespace of Object.keys(categories.namespaced).sort()) {
     lines.push('');
     lines.push(`[${namespace.charAt(0).toUpperCase() + namespace.slice(1)} Commands]`);
-    for (const cmd of categories.namespaced[namespace].sort((a, b) => a.name.localeCompare(b.name))) {
-      lines.push(`  ${cmd.name}`);
+    for (const cmd of categories.namespaced[namespace].sort((a, b) => getCommandName(a).localeCompare(getCommandName(b)))) {
+      lines.push(`  ${getCommandName(cmd)}`);
     }
   }
 
@@ -455,21 +550,22 @@ function generateTextDocs(data) {
   lines.push('');
 
   // Command Details
-  lines.push('COMMAND DETAILS');
+  lines.push('COMMAND DETAILS (FORMATTED)');
   lines.push(hr);
 
-  for (const cmd of data.commands) {
+  for (const cmd of parsed.commands) {
+    const name = getCommandName(cmd);
     lines.push('');
-    lines.push(`>>> ${cmd.name} <<<`);
+    lines.push(`>>> ${name} <<<`);
     lines.push(hr2);
-    lines.push(cmd.tldrOutput);
+    lines.push(JSON.stringify(cmd, null, 2));
     lines.push('');
   }
 
   // Footer
   lines.push(hr);
-  lines.push(`  End of ${data.name} TLDR Documentation`);
-  lines.push('  Generated by: tldr-doc-gen.js (TLDR v0.1 Universal Generator)');
+  lines.push(`  End of ${parsed.toolName} TLDR Documentation`);
+  lines.push('  Generated by: tldr-doc-gen.js (TLDR v0.2 Universal Generator)');
   lines.push(hr);
 
   return lines.join('\n');
@@ -478,44 +574,40 @@ function generateTextDocs(data) {
 /**
  * Generate JSON output with analytics
  */
-function generateJsonDocs(data) {
-  const graph = buildDependencyGraph(data.commands);
-  const categories = categorizeCommands(data.commands);
-  const flagAnalysis = analyzeFlagTypes(data.commands);
+function generateJsonDocs(parsed) {
+  const graph = buildDependencyGraph(parsed.commands);
+  const categories = categorizeCommands(parsed.commands);
+  const flagAnalysis = analyzeFlagTypes(parsed.commands);
+  const sideEffectAnalysis = analyzeSideEffects(parsed.commands);
 
   return JSON.stringify({
     metadata: {
-      name: data.name,
-      version: data.version,
-      summary: data.summary,
-      generated: data.generated,
-      tldrSpec: 'v0.1',
-      totalCommands: data.commands.length
+      name: parsed.toolName,
+      version: parsed.version,
+      generated: new Date().toISOString(),
+      tldrSpec: 'v0.2',
+      totalCommands: parsed.commands.length,
+      keymap: parsed.keymap
     },
-    globalIndex: parseAsciiTldr(data.globalIndex),
-    commands: data.commands.map(cmd => ({
-      name: cmd.name,
-      purpose: cmd.purpose,
-      inputs: cmd.inputs,
-      outputs: cmd.outputs,
-      sideEffects: cmd.sideEffects,
-      flags: parseFlags(cmd.flags),
-      examples: parseExamples(cmd.examples),
-      related: parseRelated(cmd.related),
-      schemaJson: cmd.schemaJson,
-      ascii: cmd.tldrOutput
+    commands: parsed.commands.map(cmd => ({
+      ...cmd,
+      // Add resolved names for convenience
+      _name: getCommandName(cmd),
+      _purpose: getPurpose(cmd),
+      _related: getRelated(cmd)
     })),
     analytics: {
       categories: {
-        topLevel: categories['top-level'].map(c => c.name),
+        topLevel: categories['top-level'].map(c => getCommandName(c)),
         namespaced: Object.fromEntries(
           Object.entries(categories.namespaced).map(([ns, cmds]) => [
             ns,
-            cmds.map(c => c.name)
+            cmds.map(c => getCommandName(c))
           ])
         )
       },
       flagTypes: flagAnalysis,
+      sideEffects: sideEffectAnalysis,
       dependencyGraph: graph,
       mostConnectedCommands: Object.entries(graph.centrality)
         .sort((a, b) => b[1] - a[1])
@@ -527,7 +619,7 @@ function generateJsonDocs(data) {
           incoming: (graph.incoming[cmd] || []).length
         }))
     },
-    generatedBy: 'tldr-doc-gen.js (TLDR v0.1 Universal Generator)'
+    generatedBy: 'tldr-doc-gen.js (TLDR v0.2 Universal Generator)'
   }, null, 2);
 }
 
@@ -557,77 +649,45 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`ℹ Fetching global TLDR index from '${cli} --tldr'...`);
+  console.log(`ℹ Fetching TLDR output from '${cli} --tldr'...`);
 
-  // Fetch global TLDR
-  let globalTldr;
+  // Fetch TLDR output
+  let tldrOutput;
   try {
-    globalTldr = exec(`${cli} --tldr`);
+    tldrOutput = exec(`${cli} --tldr`);
   } catch (error) {
-    console.error('✖ Failed to fetch global TLDR');
+    console.error('✖ Failed to fetch TLDR output');
     console.error(error.message);
     process.exit(1);
   }
 
-  // Parse global index
-  const parsed = parseAsciiTldr(globalTldr);
-  const name = parsed.NAME;
-  const version = parsed.VERSION;
-  const summary = parsed.SUMMARY;
-  const commands = parsed.COMMANDS ? parsed.COMMANDS.split(',').map(c => c.trim()) : [];
-
-  // Validate global index
-  let validationErrors = 0;
-  if (!name) { console.error('✖ Global index missing NAME'); validationErrors++; }
-  if (!version) { console.error('✖ Global index missing VERSION'); validationErrors++; }
-  if (!summary) { console.error('✖ Global index missing SUMMARY'); validationErrors++; }
-  if (commands.length === 0) { console.error('✖ Global index missing COMMANDS'); validationErrors++; }
-
-  if (validationErrors > 0) {
-    console.error(`✖ Global index validation failed with ${validationErrors} error(s)`);
+  // Parse TLDR output
+  let parsed;
+  try {
+    parsed = parseTldrOutput(tldrOutput);
+  } catch (error) {
+    console.error('✖ Failed to parse TLDR output');
+    console.error(error.message);
     process.exit(1);
   }
 
-  console.log('✔ Global index validated');
-  console.log(`ℹ Found ${commands.length} commands`);
+  console.log(`✔ Tool: ${parsed.toolName} v${parsed.version}`);
+  console.log(`ℹ Found ${parsed.commands.length} commands`);
 
   // Validation mode
   if (mode === '--validate') {
     console.log('ℹ Running validation checks...\n');
 
-    let accessibleCommands = 0;
-    let failedCommands = 0;
-    let totalErrors = 0;
-    let totalWarnings = 0;
+    const validation = validateTldrFormat(parsed);
 
-    for (const cmd of commands) {
-      const cmdArgs = cmd.replace(/\./g, ' ');
+    if (validation.errors.length > 0) {
+      console.error('✖ Validation errors:');
+      validation.errors.forEach(err => console.error(`  - ${err}`));
+    }
 
-      // Fetch both ASCII and JSON
-      const ascii = exec(`${cli} ${cmdArgs} --tldr`, { allowFailure: true });
-      const json = exec(`${cli} ${cmdArgs} --tldr --json`, { allowFailure: true });
-
-      if (ascii && json) {
-        accessibleCommands++;
-
-        // Validate format consistency
-        const validation = validateTldrFormat(ascii, json, cmd);
-
-        if (validation.errors.length > 0) {
-          console.error(`✖ Command '${cmd}':`);
-          validation.errors.forEach(err => console.error(`  - ${err}`));
-          totalErrors += validation.errors.length;
-        }
-
-        if (validation.warnings.length > 0) {
-          console.warn(`⚠ Command '${cmd}':`);
-          validation.warnings.forEach(warn => console.warn(`  - ${warn}`));
-          totalWarnings += validation.warnings.length;
-        }
-      } else {
-        console.error(`✖ Command '${cmd}' is not accessible`);
-        failedCommands++;
-      }
+    if (validation.warnings.length > 0) {
+      console.warn('⚠ Validation warnings:');
+      validation.warnings.forEach(warn => console.warn(`  - ${warn}`));
     }
 
     // Validation summary
@@ -635,92 +695,46 @@ function main() {
     console.log('========================================');
     console.log('VALIDATION SUMMARY');
     console.log('========================================');
-    console.log(`ℹ CLI: ${name} v${version}`);
-    console.log(`ℹ Total commands: ${commands.length}`);
-    console.log(`✔ Accessible commands: ${accessibleCommands}`);
+    console.log(`ℹ CLI: ${parsed.toolName} v${parsed.version}`);
+    console.log(`ℹ Total commands: ${parsed.commands.length}`);
 
-    if (failedCommands > 0) {
-      console.error(`✖ Failed commands: ${failedCommands}`);
+    if (validation.errors.length > 0) {
+      console.error(`✖ Validation errors: ${validation.errors.length}`);
     }
 
-    if (totalErrors > 0) {
-      console.error(`✖ Validation errors: ${totalErrors}`);
-    }
-
-    if (totalWarnings > 0) {
-      console.warn(`⚠ Validation warnings: ${totalWarnings}`);
+    if (validation.warnings.length > 0) {
+      console.warn(`⚠ Validation warnings: ${validation.warnings.length}`);
     }
 
     console.log('');
-    if (totalErrors === 0 && failedCommands === 0) {
-      console.log(`✔ ${name} is TLDR v0.1 compliant ✨`);
+    if (validation.errors.length === 0) {
+      console.log(`✔ ${parsed.toolName} is TLDR v0.2 compliant ✨`);
       process.exit(0);
     } else {
-      console.error(`✖ ${name} has validation failures`);
+      console.error(`✖ ${parsed.toolName} has validation failures`);
       process.exit(1);
     }
   }
 
   // Documentation generation mode
-  console.log('ℹ Fetching command details...');
-
-  const commandData = [];
-  for (const cmd of commands) {
-    const cmdArgs = cmd.replace(/\./g, ' ');
-
-    try {
-      const tldrOutput = exec(`${cli} ${cmdArgs} --tldr`);
-      const parsedCmd = parseAsciiTldr(tldrOutput);
-
-      commandData.push({
-        name: cmd,
-        purpose: parsedCmd.PURPOSE || '',
-        inputs: parsedCmd.INPUTS || '',
-        outputs: parsedCmd.OUTPUTS || '',
-        sideEffects: parsedCmd.SIDE_EFFECTS || '',
-        flags: parsedCmd.FLAGS || '',
-        examples: parsedCmd.EXAMPLES || '',
-        related: parsedCmd.RELATED || '',
-        schemaJson: parsedCmd.SCHEMA_JSON || '',
-        tldrOutput
-      });
-    } catch (error) {
-      console.warn(`⚠ Failed to fetch TLDR for command '${cmd}'`);
-      commandData.push({
-        name: cmd,
-        purpose: 'ERROR: Failed to fetch TLDR',
-        tldrOutput: `ERROR: ${error.message}`
-      });
-    }
-  }
-
-  const data = {
-    name,
-    version,
-    summary,
-    generated: new Date().toISOString(),
-    globalIndex: globalTldr,
-    commands: commandData
-  };
+  console.log('ℹ Generating documentation files...');
 
   // Generate all formats
   const outputPrefix = cli;
 
-  console.log('ℹ Generating documentation files...');
-
   // Text format
   const textOutput = `${outputPrefix}_tldr.txt`;
-  fs.writeFileSync(textOutput, generateTextDocs(data));
+  fs.writeFileSync(textOutput, generateTextDocs(parsed));
   console.log(`✔ Generated: ${textOutput}`);
 
   // Markdown format
   const mdOutput = `${outputPrefix}_tldr.md`;
-  fs.writeFileSync(mdOutput, generateMarkdownDocs(data));
+  fs.writeFileSync(mdOutput, generateMarkdownDocs(parsed));
   console.log(`✔ Generated: ${mdOutput}`);
 
   // JSON format
   const jsonOutput = `${outputPrefix}_tldr.json`;
-  fs.writeFileSync(jsonOutput, generateJsonDocs(data));
+  fs.writeFileSync(jsonOutput, generateJsonDocs(parsed));
   console.log(`✔ Generated: ${jsonOutput}`);
 
   console.log('');
@@ -733,12 +747,10 @@ if (require.main === module) {
 }
 
 module.exports = {
-  parseAsciiTldr,
-  parseFlags,
-  parseExamples,
-  parseRelated,
+  parseTldrOutput,
   validateTldrFormat,
   buildDependencyGraph,
   categorizeCommands,
-  analyzeFlagTypes
+  analyzeFlagTypes,
+  analyzeSideEffects
 };

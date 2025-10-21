@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 """
-tldr-doc-gen.py - Universal TLDR v0.1 Documentation Generator (Python)
+tldr-doc-gen.py - Universal TLDR v0.2 Documentation Generator (Python)
 
 Generates comprehensive documentation and analytics for any CLI implementing
-the TLDR standard. Focus on data analysis, statistics, and validation.
+the TLDR v0.2 standard. Focus on data analysis, statistics, and validation.
 
 Usage:
-    ./tldr-doc-gen.py <cli-command> [--validate|--analyze|--html]
+    ./tldr-doc-gen.py <cli-command> [--validate|--analyze]
 
 Examples:
     ./tldr-doc-gen.py forest
     ./tldr-doc-gen.py forest --validate
     ./tldr-doc-gen.py forest --analyze
-    ./tldr-doc-gen.py forest --html
     ./tldr-doc-gen.py git  # (if git implemented TLDR)
 
 Output Files:
     <cli>_tldr_analytics.json - Structured data with embedded analytics
-    <cli>_tldr_report.html - Optional visual report (with --html)
 
 Features:
     - Statistics: flag type distribution, command hierarchy, coverage metrics
     - Validation suite with detailed error reporting
-    - Optional HTML report generation
     - Analytics embedded in JSON output
     - Dependency graph analysis
     - Coverage and completeness metrics
@@ -32,6 +29,7 @@ import subprocess
 import json
 import sys
 import shutil
+import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Tuple
@@ -65,633 +63,430 @@ def is_command_available(cli: str) -> bool:
     return shutil.which(cli) is not None
 
 
-def parse_ascii_tldr(ascii: str) -> Dict[str, str]:
-    """Parse ASCII TLDR format to dictionary."""
-    parsed = {}
-    for line in ascii.split('\n'):
-        if ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                key, value = parts
-                key = key.strip()
-                if key.isupper() or key.replace('_', '').isupper():
-                    parsed[key] = value.strip()
-    return parsed
+def parse_tldr_output(output: str) -> Dict[str, Any]:
+    """Parse TLDR v0.2 NDJSON output."""
+    lines = output.strip().split('\n')
 
+    if len(lines) < 2:
+        raise ValueError("Invalid TLDR output: too few lines")
 
-def parse_flags(flags_string: str) -> List[Dict[str, Any]]:
-    """Parse FLAGS field into structured list."""
-    if not flags_string:
-        return []
+    # Parse tool delimiter
+    tool_delimiter = lines[0]
+    tool_match = re.match(r'^---\s+tool:\s+(.+)\s+---$', tool_delimiter)
+    if not tool_match:
+        raise ValueError(f"Invalid tool delimiter: {tool_delimiter}")
+    tool_name = tool_match.group(1)
 
-    flags = []
-    for flag in flags_string.split(';'):
-        flag = flag.strip()
-        if not flag or '|' not in flag:
+    # Parse metadata header
+    meta_line = lines[1]
+    if not meta_line.startswith('# meta:'):
+        raise ValueError(f"Invalid metadata line: {meta_line}")
+
+    meta_content = meta_line[7:].strip()
+    version_match = re.search(r'version=([^,]+)', meta_content)
+    keymap_match = re.search(r'keymap=(\{[^}]+\})', meta_content)
+
+    if not version_match or not keymap_match:
+        raise ValueError("Metadata missing version or keymap")
+
+    version = version_match.group(1)
+    keymap = json.loads(keymap_match.group(1))
+
+    # Parse command records (skip first 2 lines)
+    commands = []
+    for i, line in enumerate(lines[2:], start=3):
+        line = line.strip()
+        if not line:
             continue
 
-        parts = flag.split('|', 1)
-        if len(parts) < 2:
-            continue
+        try:
+            cmd = json.loads(line)
+            commands.append(cmd)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON on line {i}: {line}\n{e}")
 
-        signature, description = parts
-        signature = signature.strip()
-
-        # Parse --name=TYPE=default format
-        if signature.startswith('--'):
-            flag_parts = signature[2:].split('=')
-            name = flag_parts[0]
-            flag_type = flag_parts[1] if len(flag_parts) > 1 else 'BOOL'
-            default = flag_parts[2] if len(flag_parts) > 2 else None
-
-            flags.append({
-                'name': name,
-                'type': flag_type,
-                'default': default,
-                'description': description.strip()
-            })
-
-    return flags
+    return {
+        'tool_name': tool_name,
+        'version': version,
+        'keymap': keymap,
+        'commands': commands,
+        'raw_output': output
+    }
 
 
-def parse_examples(examples_string: str) -> List[str]:
-    """Parse EXAMPLES field into list."""
-    if not examples_string:
-        return []
-    return [ex.strip() for ex in examples_string.split('|') if ex.strip()]
+def get_command_name(cmd: Dict[str, Any]) -> str:
+    """Get command name from record."""
+    return cmd.get('cmd') or cmd.get('command', '')
 
 
-def parse_related(related_string: str) -> List[str]:
-    """Parse RELATED field into list."""
-    if not related_string:
-        return []
-    return [r.strip() for r in related_string.split(',') if r.strip()]
+def get_purpose(cmd: Dict[str, Any]) -> str:
+    """Get purpose from record."""
+    return cmd.get('p') or cmd.get('purpose', '')
 
 
-# ============================================================================
-# TLDR Fetching
-# ============================================================================
-
-def fetch_global_tldr(cli: str) -> Tuple[str, Dict[str, str]]:
-    """Fetch and parse global TLDR index."""
-    ascii = exec_command([cli, '--tldr'])
-    parsed = parse_ascii_tldr(ascii)
-    return ascii, parsed
-
-
-def fetch_command_tldr(cli: str, command: str) -> Tuple[Optional[str], Optional[Dict[str, str]]]:
-    """Fetch and parse command TLDR."""
-    # Convert dot notation to space (e.g., "node.read" -> "node read")
-    cmd_args = command.replace('.', ' ').split()
-    full_cmd = [cli] + cmd_args + ['--tldr']
-
-    ascii = exec_command(full_cmd, allow_failure=True)
-    if ascii is None:
-        return None, None
-
-    parsed = parse_ascii_tldr(ascii)
-    return ascii, parsed
+def get_related(cmd: Dict[str, Any]) -> List[str]:
+    """Get related commands from record."""
+    related = cmd.get('related', [])
+    return related if isinstance(related, list) else []
 
 
 # ============================================================================
 # Validation
 # ============================================================================
 
-def validate_global_index(parsed: Dict[str, str]) -> Tuple[List[str], List[str]]:
-    """Validate global TLDR index."""
+def validate_tldr_format(parsed: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """Validate TLDR format. Returns (errors, warnings)."""
     errors = []
     warnings = []
 
-    required_fields = ['NAME', 'VERSION', 'SUMMARY', 'COMMANDS']
-    for field in required_fields:
-        if field not in parsed or not parsed[field]:
-            errors.append(f"Missing required field: {field}")
+    # Validate metadata
+    if not parsed.get('tool_name'):
+        errors.append('Missing tool name in delimiter')
+    if not parsed.get('version'):
+        errors.append('Missing version in metadata')
+    if not parsed.get('keymap'):
+        errors.append('Missing keymap in metadata')
+
+    # Validate commands
+    for i, cmd in enumerate(parsed.get('commands', []), start=1):
+        cmd_name = get_command_name(cmd)
+        purpose = get_purpose(cmd)
+
+        if not cmd_name:
+            errors.append(f'Command {i} missing "cmd" field')
+        if not purpose:
+            warnings.append(f'Command "{cmd_name or i}" missing "p" (purpose) field')
+
+        # Validate JSON structure
+        if not isinstance(cmd, dict):
+            errors.append(f'Command {i} is not a valid object')
 
     return errors, warnings
-
-
-def validate_command_tldr(
-    command: str,
-    ascii: Optional[str],
-    parsed: Optional[Dict[str, str]]
-) -> Tuple[List[str], List[str]]:
-    """Validate command TLDR format."""
-    errors = []
-    warnings = []
-
-    if ascii is None or parsed is None:
-        errors.append(f"Command '{command}' is not accessible")
-        return errors, warnings
-
-    # Check required fields
-    required_fields = ['CMD', 'PURPOSE']
-    for field in required_fields:
-        if field not in parsed or not parsed[field]:
-            errors.append(f"Missing required field: {field}")
-
-    # Validate CMD matches command name
-    if parsed.get('CMD') and parsed['CMD'] != command:
-        warnings.append(
-            f"CMD field mismatch: expected '{command}', got '{parsed['CMD']}'"
-        )
-
-    return errors, warnings
-
-
-def validate_tldr_compliance(cli: str) -> Dict[str, Any]:
-    """Comprehensive TLDR compliance validation."""
-    print(f"ℹ Validating TLDR compliance for '{cli}'...")
-
-    # Fetch global index
-    try:
-        global_ascii, global_parsed = fetch_global_tldr(cli)
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f"Failed to fetch global TLDR: {str(e)}"
-        }
-
-    # Validate global index
-    global_errors, global_warnings = validate_global_index(global_parsed)
-
-    if global_errors:
-        return {
-            'success': False,
-            'globalErrors': global_errors,
-            'globalWarnings': global_warnings
-        }
-
-    # Parse commands list
-    commands_str = global_parsed.get('COMMANDS', '')
-    commands = [c.strip() for c in commands_str.split(',') if c.strip()]
-
-    print(f"ℹ Found {len(commands)} commands to validate")
-
-    # Validate each command
-    accessible_count = 0
-    failed_count = 0
-    command_results = {}
-
-    for command in commands:
-        ascii, parsed = fetch_command_tldr(cli, command)
-        errors, warnings = validate_command_tldr(command, ascii, parsed)
-
-        if ascii is not None:
-            accessible_count += 1
-
-        if errors:
-            failed_count += 1
-
-        if errors or warnings:
-            command_results[command] = {
-                'errors': errors,
-                'warnings': warnings
-            }
-
-    # Build validation report
-    total_errors = len(global_errors) + sum(
-        len(r['errors']) for r in command_results.values()
-    )
-    total_warnings = len(global_warnings) + sum(
-        len(r['warnings']) for r in command_results.values()
-    )
-
-    return {
-        'success': total_errors == 0 and failed_count == 0,
-        'cli': global_parsed.get('NAME'),
-        'version': global_parsed.get('VERSION'),
-        'totalCommands': len(commands),
-        'accessibleCommands': accessible_count,
-        'failedCommands': failed_count,
-        'globalErrors': global_errors,
-        'globalWarnings': global_warnings,
-        'commandResults': command_results,
-        'totalErrors': total_errors,
-        'totalWarnings': total_warnings
-    }
 
 
 # ============================================================================
 # Analytics
 # ============================================================================
 
-def categorize_by_namespace(commands: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    """Categorize commands by namespace."""
-    categories = {
-        'top-level': []
-    }
-
-    for cmd in commands:
-        name = cmd['name']
-        if '.' in name:
-            namespace = name.split('.')[0]
-            if namespace not in categories:
-                categories[namespace] = []
-            categories[namespace].append(name)
-        else:
-            categories['top-level'].append(name)
-
-    return categories
-
-
-def analyze_flag_types(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Analyze flag type distribution."""
-    type_counter = Counter()
-    total_flags = 0
-
-    for cmd in commands:
-        flags = parse_flags(cmd.get('flags', ''))
-        total_flags += len(flags)
-
-        for flag in flags:
-            type_counter[flag['type']] += 1
-
-    return {
-        'distribution': dict(type_counter),
-        'total': total_flags,
-        'averagePerCommand': round(total_flags / len(commands), 2) if commands else 0,
-        'mostCommonType': type_counter.most_common(1)[0][0] if type_counter else None
-    }
-
-
 def build_dependency_graph(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build dependency graph from RELATED fields."""
-    outgoing = {}
-    incoming = defaultdict(list)
+    """Build dependency graph from related fields."""
+    graph = {}
+    incoming_edges = defaultdict(list)
 
     for cmd in commands:
-        name = cmd['name']
-        related = parse_related(cmd.get('related', ''))
-        outgoing[name] = related
+        cmd_name = get_command_name(cmd)
+        related = get_related(cmd)
+        graph[cmd_name] = related
 
-        for rel in related:
-            incoming[rel].append(name)
+        # Track incoming edges (reverse dependencies)
+        for related_cmd in related:
+            incoming_edges[related_cmd].append(cmd_name)
 
     # Calculate centrality (total edges)
     centrality = {}
     for cmd in commands:
-        name = cmd['name']
-        out_count = len(outgoing.get(name, []))
-        in_count = len(incoming.get(name, []))
-        centrality[name] = out_count + in_count
+        cmd_name = get_command_name(cmd)
+        centrality[cmd_name] = (
+            len(graph.get(cmd_name, [])) +
+            len(incoming_edges.get(cmd_name, []))
+        )
 
-    # Find most connected
+    return {
+        'outgoing': graph,
+        'incoming': dict(incoming_edges),
+        'centrality': centrality
+    }
+
+
+def categorize_commands(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Categorize commands by namespace."""
+    categories = {
+        'top_level': [],
+        'namespaced': defaultdict(list)
+    }
+
+    for cmd in commands:
+        name = get_command_name(cmd)
+        if '.' in name:
+            namespace = name.split('.')[0]
+            categories['namespaced'][namespace].append(cmd)
+        else:
+            categories['top_level'].append(cmd)
+
+    return {
+        'top_level': categories['top_level'],
+        'namespaced': dict(categories['namespaced'])
+    }
+
+
+def analyze_flag_types(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Analyze flag types distribution."""
+    types = Counter()
+    total_flags = 0
+
+    for cmd in commands:
+        flags = cmd.get('fl') or cmd.get('flags', [])
+        total_flags += len(flags)
+
+        for flag in flags:
+            flag_type = flag.get('t') or flag.get('type', 'unknown')
+            types[flag_type] += 1
+
+    return {
+        'distribution': dict(types),
+        'total': total_flags,
+        'average_per_command': round(total_flags / len(commands), 2) if commands else 0
+    }
+
+
+def analyze_side_effects(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Analyze side effects distribution."""
+    effects = Counter()
+    commands_with_effects = 0
+
+    for cmd in commands:
+        side_effects = cmd.get('effects') or cmd.get('side_effects', [])
+        if side_effects:
+            commands_with_effects += 1
+            for effect in side_effects:
+                effects[effect] += 1
+
+    return {
+        'distribution': dict(effects),
+        'commands_with_effects': commands_with_effects,
+        'commands_without_effects': len(commands) - commands_with_effects
+    }
+
+
+def analyze_inputs_outputs(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Analyze inputs and outputs patterns."""
+    input_types = Counter()
+    output_types = Counter()
+    commands_with_inputs = 0
+    commands_with_outputs = 0
+
+    for cmd in commands:
+        inputs = cmd.get('in') or cmd.get('inputs', [])
+        outputs = cmd.get('out') or cmd.get('outputs', [])
+
+        if inputs:
+            commands_with_inputs += 1
+            for inp in inputs:
+                inp_type = inp.get('t') or inp.get('type', 'unknown')
+                input_types[inp_type] += 1
+
+        if outputs:
+            commands_with_outputs += 1
+            for out in outputs:
+                out_type = out.get('t') or out.get('type', 'unknown')
+                output_types[out_type] += 1
+
+    return {
+        'input_types': dict(input_types),
+        'output_types': dict(output_types),
+        'commands_with_inputs': commands_with_inputs,
+        'commands_with_outputs': commands_with_outputs
+    }
+
+
+def calculate_coverage_metrics(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Calculate documentation coverage metrics."""
+    total = len(commands)
+
+    metrics = {
+        'with_purpose': 0,
+        'with_examples': 0,
+        'with_inputs': 0,
+        'with_outputs': 0,
+        'with_flags': 0,
+        'with_side_effects': 0,
+        'with_related': 0
+    }
+
+    for cmd in commands:
+        if get_purpose(cmd):
+            metrics['with_purpose'] += 1
+        if cmd.get('example') or cmd.get('examples'):
+            metrics['with_examples'] += 1
+        if cmd.get('in') or cmd.get('inputs'):
+            metrics['with_inputs'] += 1
+        if cmd.get('out') or cmd.get('outputs'):
+            metrics['with_outputs'] += 1
+        if cmd.get('fl') or cmd.get('flags'):
+            metrics['with_flags'] += 1
+        if cmd.get('effects') or cmd.get('side_effects'):
+            metrics['with_side_effects'] += 1
+        if get_related(cmd):
+            metrics['with_related'] += 1
+
+    # Calculate percentages
+    percentages = {
+        key: round((value / total) * 100, 1) if total > 0 else 0
+        for key, value in metrics.items()
+    }
+
+    return {
+        'counts': metrics,
+        'percentages': percentages,
+        'total_commands': total
+    }
+
+
+# ============================================================================
+# Output Generation
+# ============================================================================
+
+def generate_analytics_json(parsed: Dict[str, Any]) -> str:
+    """Generate comprehensive analytics JSON."""
+    commands = parsed['commands']
+
+    graph = build_dependency_graph(commands)
+    categories = categorize_commands(commands)
+    flag_analysis = analyze_flag_types(commands)
+    side_effect_analysis = analyze_side_effects(commands)
+    io_analysis = analyze_inputs_outputs(commands)
+    coverage = calculate_coverage_metrics(commands)
+
+    # Most connected commands
     most_connected = sorted(
-        centrality.items(),
+        graph['centrality'].items(),
         key=lambda x: x[1],
         reverse=True
     )[:10]
 
-    return {
-        'outgoing': outgoing,
-        'incoming': dict(incoming),
-        'centrality': centrality,
-        'mostConnected': [
+    data = {
+        'metadata': {
+            'name': parsed['tool_name'],
+            'version': parsed['version'],
+            'generated': datetime.now(timezone.utc).isoformat(),
+            'tldr_spec': 'v0.2',
+            'total_commands': len(commands),
+            'keymap': parsed['keymap']
+        },
+        'commands': [
             {
-                'command': cmd,
-                'centrality': cent,
-                'outgoing': len(outgoing.get(cmd, [])),
-                'incoming': len(incoming.get(cmd, []))
+                **cmd,
+                '_name': get_command_name(cmd),
+                '_purpose': get_purpose(cmd),
+                '_related': get_related(cmd)
             }
-            for cmd, cent in most_connected if cent > 0
-        ]
+            for cmd in commands
+        ],
+        'analytics': {
+            'categories': {
+                'top_level': [get_command_name(c) for c in categories['top_level']],
+                'namespaced': {
+                    ns: [get_command_name(c) for c in cmds]
+                    for ns, cmds in categories['namespaced'].items()
+                }
+            },
+            'flag_types': flag_analysis,
+            'side_effects': side_effect_analysis,
+            'inputs_outputs': io_analysis,
+            'coverage': coverage,
+            'dependency_graph': {
+                'outgoing': graph['outgoing'],
+                'incoming': graph['incoming'],
+                'centrality': graph['centrality'],
+                'most_connected': [
+                    {
+                        'command': cmd,
+                        'centrality': cent,
+                        'outgoing': len(graph['outgoing'].get(cmd, [])),
+                        'incoming': len(graph['incoming'].get(cmd, []))
+                    }
+                    for cmd, cent in most_connected if cent > 0
+                ]
+            }
+        },
+        'generated_by': 'tldr-doc-gen.py (TLDR v0.2 Universal Generator)'
     }
 
-
-def calculate_coverage(commands: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Calculate documentation coverage metrics."""
-    total = len(commands)
-    with_examples = sum(1 for c in commands if c.get('examples'))
-    with_related = sum(1 for c in commands if c.get('related'))
-    with_schema = sum(1 for c in commands if c.get('schemaJson'))
-    with_side_effects = sum(1 for c in commands if c.get('sideEffects'))
-    with_flags = sum(1 for c in commands if c.get('flags'))
-
-    return {
-        'total': total,
-        'withExamples': with_examples,
-        'withExamplesPercent': round(with_examples / total * 100, 1) if total else 0,
-        'withRelated': with_related,
-        'withRelatedPercent': round(with_related / total * 100, 1) if total else 0,
-        'withSchema': with_schema,
-        'withSchemaPercent': round(with_schema / total * 100, 1) if total else 0,
-        'withSideEffects': with_side_effects,
-        'withSideEffectsPercent': round(with_side_effects / total * 100, 1) if total else 0,
-        'withFlags': with_flags,
-        'withFlagsPercent': round(with_flags / total * 100, 1) if total else 0
-    }
+    return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def analyze_commands(cli_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate comprehensive analytics."""
-    commands = cli_data['commands']
+def print_console_analytics(parsed: Dict[str, Any]) -> None:
+    """Print analytics to console."""
+    commands = parsed['commands']
 
-    return {
-        'totalCommands': len(commands),
-        'commandHierarchy': categorize_by_namespace(commands),
-        'flagTypeDistribution': analyze_flag_types(commands),
-        'coverage': calculate_coverage(commands),
-        'dependencyGraph': build_dependency_graph(commands)
-    }
+    print()
+    print("=" * 60)
+    print("TLDR v0.2 ANALYTICS")
+    print("=" * 60)
+    print()
+
+    print(f"Tool: {parsed['tool_name']} v{parsed['version']}")
+    print(f"Total Commands: {len(commands)}")
+    print()
+
+    # Categories
+    categories = categorize_commands(commands)
+    print("Command Distribution:")
+    print(f"  Top-level: {len(categories['top_level'])}")
+    print(f"  Namespaces: {len(categories['namespaced'])}")
+    for ns, cmds in sorted(categories['namespaced'].items(), key=lambda x: len(x[1]), reverse=True):
+        print(f"    {ns}: {len(cmds)} commands")
+    print()
+
+    # Coverage
+    coverage = calculate_coverage_metrics(commands)
+    print("Documentation Coverage:")
+    for key, pct in coverage['percentages'].items():
+        label = key.replace('_', ' ').title()
+        print(f"  {label}: {pct}%")
+    print()
+
+    # Flag types
+    flag_analysis = analyze_flag_types(commands)
+    if flag_analysis['total'] > 0:
+        print("Flag Type Distribution:")
+        for flag_type, count in sorted(flag_analysis['distribution'].items(), key=lambda x: x[1], reverse=True):
+            print(f"  {flag_type}: {count}")
+        print(f"  Average per command: {flag_analysis['average_per_command']}")
+        print()
+
+    # Side effects
+    side_effect_analysis = analyze_side_effects(commands)
+    if side_effect_analysis['commands_with_effects'] > 0:
+        print("Side Effects Distribution:")
+        for effect, count in sorted(side_effect_analysis['distribution'].items(), key=lambda x: x[1], reverse=True):
+            print(f"  {effect}: {count}")
+        print(f"  Commands with side effects: {side_effect_analysis['commands_with_effects']}")
+        print(f"  Commands without side effects: {side_effect_analysis['commands_without_effects']}")
+        print()
+
+    # Dependency graph
+    graph = build_dependency_graph(commands)
+    most_connected = sorted(
+        graph['centrality'].items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:5]
+
+    if any(cent > 0 for _, cent in most_connected):
+        print("Most Connected Commands:")
+        for cmd, cent in most_connected:
+            if cent > 0:
+                out = len(graph['outgoing'].get(cmd, []))
+                inc = len(graph['incoming'].get(cmd, []))
+                print(f"  {cmd}: {cent} connections ({out} outgoing, {inc} incoming)")
+
+    print()
+    print("=" * 60)
 
 
 # ============================================================================
-# HTML Report Generation
-# ============================================================================
-
-def generate_html_report(data: Dict[str, Any], output_file: str):
-    """Generate HTML visualization report."""
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{data['metadata']['name']} v{data['metadata']['version']} - TLDR Report</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-        }}
-        .header h1 {{
-            margin: 0;
-            font-size: 2.5em;
-        }}
-        .header p {{
-            margin: 10px 0 0 0;
-            opacity: 0.9;
-        }}
-        .section {{
-            background: white;
-            padding: 25px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .section h2 {{
-            margin-top: 0;
-            color: #333;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
-        }}
-        .metric {{
-            display: inline-block;
-            background: #f8f9fa;
-            padding: 15px 20px;
-            border-radius: 5px;
-            margin: 10px 10px 10px 0;
-            border-left: 4px solid #667eea;
-        }}
-        .metric-label {{
-            font-size: 0.85em;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }}
-        .metric-value {{
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #333;
-        }}
-        .bar {{
-            height: 30px;
-            background: #667eea;
-            border-radius: 5px;
-            margin: 5px 0;
-            display: flex;
-            align-items: center;
-            padding: 0 10px;
-            color: white;
-            font-weight: 500;
-        }}
-        .bar-container {{
-            margin: 15px 0;
-        }}
-        .bar-label {{
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 500;
-            color: #555;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-        }}
-        th, td {{
-            text-align: left;
-            padding: 12px;
-            border-bottom: 1px solid #e0e0e0;
-        }}
-        th {{
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-        }}
-        tr:hover {{
-            background: #f8f9fa;
-        }}
-        code {{
-            background: #f4f4f4;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-        }}
-        .tag {{
-            display: inline-block;
-            background: #e3f2fd;
-            color: #1976d2;
-            padding: 3px 10px;
-            border-radius: 12px;
-            font-size: 0.85em;
-            margin-right: 5px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>{data['metadata']['name']} v{data['metadata']['version']}</h1>
-        <p>{data['metadata']['summary']}</p>
-        <p style="font-size: 0.9em; margin-top: 15px;">
-            Generated: {data['metadata']['generated']} | TLDR Spec: v0.1
-        </p>
-    </div>
-
-    <div class="section">
-        <h2>Overview</h2>
-        <div class="metric">
-            <div class="metric-label">Total Commands</div>
-            <div class="metric-value">{data['analytics']['totalCommands']}</div>
-        </div>
-        <div class="metric">
-            <div class="metric-label">Namespaces</div>
-            <div class="metric-value">{len(data['analytics']['commandHierarchy']) - 1}</div>
-        </div>
-        <div class="metric">
-            <div class="metric-label">Total Flags</div>
-            <div class="metric-value">{data['analytics']['flagTypeDistribution']['total']}</div>
-        </div>
-        <div class="metric">
-            <div class="metric-label">Avg Flags/Command</div>
-            <div class="metric-value">{data['analytics']['flagTypeDistribution']['averagePerCommand']}</div>
-        </div>
-    </div>
-
-    <div class="section">
-        <h2>Coverage Metrics</h2>
-        <div class="bar-container">
-            <span class="bar-label">Commands with Examples</span>
-            <div class="bar" style="width: {data['analytics']['coverage']['withExamplesPercent']}%">
-                {data['analytics']['coverage']['withExamplesPercent']}% ({data['analytics']['coverage']['withExamples']}/{data['analytics']['coverage']['total']})
-            </div>
-        </div>
-        <div class="bar-container">
-            <span class="bar-label">Commands with Related Links</span>
-            <div class="bar" style="width: {data['analytics']['coverage']['withRelatedPercent']}%">
-                {data['analytics']['coverage']['withRelatedPercent']}% ({data['analytics']['coverage']['withRelated']}/{data['analytics']['coverage']['total']})
-            </div>
-        </div>
-        <div class="bar-container">
-            <span class="bar-label">Commands with Schema</span>
-            <div class="bar" style="width: {data['analytics']['coverage']['withSchemaPercent']}%">
-                {data['analytics']['coverage']['withSchemaPercent']}% ({data['analytics']['coverage']['withSchema']}/{data['analytics']['coverage']['total']})
-            </div>
-        </div>
-        <div class="bar-container">
-            <span class="bar-label">Commands with Side Effects</span>
-            <div class="bar" style="width: {data['analytics']['coverage']['withSideEffectsPercent']}%">
-                {data['analytics']['coverage']['withSideEffectsPercent']}% ({data['analytics']['coverage']['withSideEffects']}/{data['analytics']['coverage']['total']})
-            </div>
-        </div>
-    </div>
-
-    <div class="section">
-        <h2>Flag Type Distribution</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Type</th>
-                    <th>Count</th>
-                    <th>Percentage</th>
-                </tr>
-            </thead>
-            <tbody>
-"""
-
-    flag_dist = data['analytics']['flagTypeDistribution']['distribution']
-    total_flags = data['analytics']['flagTypeDistribution']['total']
-    for flag_type, count in sorted(flag_dist.items(), key=lambda x: x[1], reverse=True):
-        percent = round(count / total_flags * 100, 1) if total_flags else 0
-        html += f"""
-                <tr>
-                    <td><code>{flag_type}</code></td>
-                    <td>{count}</td>
-                    <td>{percent}%</td>
-                </tr>
-"""
-
-    html += """
-            </tbody>
-        </table>
-    </div>
-
-    <div class="section">
-        <h2>Command Hierarchy</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Namespace</th>
-                    <th>Commands</th>
-                    <th>Count</th>
-                </tr>
-            </thead>
-            <tbody>
-"""
-
-    hierarchy = data['analytics']['commandHierarchy']
-    for namespace, cmds in sorted(hierarchy.items(), key=lambda x: len(x[1]), reverse=True):
-        cmd_tags = ' '.join([f'<span class="tag">{cmd}</span>' for cmd in sorted(cmds)[:5]])
-        more = len(cmds) - 5
-        if more > 0:
-            cmd_tags += f' <span class="tag">+{more} more</span>'
-        html += f"""
-                <tr>
-                    <td><strong>{namespace}</strong></td>
-                    <td>{cmd_tags}</td>
-                    <td>{len(cmds)}</td>
-                </tr>
-"""
-
-    html += """
-            </tbody>
-        </table>
-    </div>
-
-    <div class="section">
-        <h2>Most Connected Commands</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Command</th>
-                    <th>Total Connections</th>
-                    <th>Outgoing</th>
-                    <th>Incoming</th>
-                </tr>
-            </thead>
-            <tbody>
-"""
-
-    most_connected = data['analytics']['dependencyGraph']['mostConnected']
-    for cmd_info in most_connected[:10]:
-        html += f"""
-                <tr>
-                    <td><code>{cmd_info['command']}</code></td>
-                    <td><strong>{cmd_info['centrality']}</strong></td>
-                    <td>{cmd_info['outgoing']}</td>
-                    <td>{cmd_info['incoming']}</td>
-                </tr>
-"""
-
-    html += f"""
-            </tbody>
-        </table>
-    </div>
-
-    <div class="section" style="text-align: center; color: #666; font-size: 0.9em;">
-        <p>Generated by <strong>tldr-doc-gen.py</strong> (TLDR v0.1 Universal Generator)</p>
-    </div>
-</body>
-</html>
-"""
-
-    with open(output_file, 'w') as f:
-        f.write(html)
-
-
-# ============================================================================
-# Main Logic
+# Main
 # ============================================================================
 
 def main():
     if len(sys.argv) < 2:
-        print('Usage: tldr-doc-gen.py <cli-command> [--validate|--analyze|--html]')
-        print('')
-        print('Examples:')
-        print('  tldr-doc-gen.py forest')
-        print('  tldr-doc-gen.py forest --validate')
-        print('  tldr-doc-gen.py forest --analyze')
-        print('  tldr-doc-gen.py forest --html')
+        print("Usage: tldr-doc-gen.py <cli-command> [--validate|--analyze]", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Examples:", file=sys.stderr)
+        print("  tldr-doc-gen.py forest", file=sys.stderr)
+        print("  tldr-doc-gen.py forest --validate", file=sys.stderr)
+        print("  tldr-doc-gen.py forest --analyze", file=sys.stderr)
         sys.exit(1)
 
     cli = sys.argv[1]
@@ -699,160 +494,93 @@ def main():
 
     # Check if CLI is available
     if not is_command_available(cli):
-        print(f"✖ Error: '{cli}' command not found")
+        print(f"✖ Error: '{cli}' command not found", file=sys.stderr)
         sys.exit(1)
+
+    print(f"ℹ Fetching TLDR output from '{cli} --tldr'...")
+
+    # Fetch TLDR output
+    try:
+        tldr_output = exec_command([cli, '--tldr'])
+    except RuntimeError as e:
+        print(f"✖ Failed to fetch TLDR output", file=sys.stderr)
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    # Parse TLDR output
+    try:
+        parsed = parse_tldr_output(tldr_output)
+    except (ValueError, json.JSONDecodeError) as e:
+        print(f"✖ Failed to parse TLDR output", file=sys.stderr)
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✔ Tool: {parsed['tool_name']} v{parsed['version']}")
+    print(f"ℹ Found {len(parsed['commands'])} commands")
 
     # Validation mode
     if mode == '--validate':
-        validation = validate_tldr_compliance(cli)
+        print("ℹ Running validation checks...\n")
 
-        print('')
-        print('=' * 50)
-        print('VALIDATION SUMMARY')
-        print('=' * 50)
-        print(f"ℹ CLI: {validation.get('cli')} v{validation.get('version')}")
-        print(f"ℹ Total commands: {validation['totalCommands']}")
-        print(f"✔ Accessible commands: {validation['accessibleCommands']}")
+        errors, warnings = validate_tldr_format(parsed)
 
-        if validation['failedCommands'] > 0:
-            print(f"✖ Failed commands: {validation['failedCommands']}")
+        if errors:
+            print("✖ Validation errors:")
+            for err in errors:
+                print(f"  - {err}")
 
-        if validation['totalErrors'] > 0:
-            print(f"✖ Validation errors: {validation['totalErrors']}")
+        if warnings:
+            print("⚠ Validation warnings:")
+            for warn in warnings:
+                print(f"  - {warn}")
 
-        if validation['totalWarnings'] > 0:
-            print(f"⚠ Validation warnings: {validation['totalWarnings']}")
+        # Validation summary
+        print()
+        print("=" * 40)
+        print("VALIDATION SUMMARY")
+        print("=" * 40)
+        print(f"ℹ CLI: {parsed['tool_name']} v{parsed['version']}")
+        print(f"ℹ Total commands: {len(parsed['commands'])}")
 
-        # Show detailed errors
-        if validation.get('commandResults'):
-            print('')
-            print('Command Issues:')
-            for cmd, results in validation['commandResults'].items():
-                if results['errors']:
-                    print(f"  ✖ {cmd}:")
-                    for err in results['errors']:
-                        print(f"    - {err}")
-                if results['warnings']:
-                    print(f"  ⚠ {cmd}:")
-                    for warn in results['warnings']:
-                        print(f"    - {warn}")
+        if errors:
+            print(f"✖ Validation errors: {len(errors)}")
 
-        print('')
-        if validation['success']:
-            print(f"✔ {validation['cli']} is TLDR v0.1 compliant ✨")
+        if warnings:
+            print(f"⚠ Validation warnings: {len(warnings)}")
+
+        print()
+        if not errors:
+            print(f"✔ {parsed['tool_name']} is TLDR v0.2 compliant ✨")
             sys.exit(0)
         else:
-            print(f"✖ {validation['cli']} has validation failures")
+            print(f"✖ {parsed['tool_name']} has validation failures")
             sys.exit(1)
 
-    # Documentation generation mode
-    print(f"ℹ Fetching TLDR data from '{cli}'...")
-
-    try:
-        global_ascii, global_parsed = fetch_global_tldr(cli)
-    except Exception as e:
-        print(f"✖ Failed to fetch global TLDR: {str(e)}")
-        sys.exit(1)
-
-    name = global_parsed.get('NAME', '')
-    version = global_parsed.get('VERSION', '')
-    summary = global_parsed.get('SUMMARY', '')
-    commands_str = global_parsed.get('COMMANDS', '')
-
-    # Parse commands
-    commands = [c.strip() for c in commands_str.split(',') if c.strip()]
-    print(f"ℹ Found {len(commands)} commands")
-
-    # Fetch all command details
-    print('ℹ Fetching command details...')
-    command_data = []
-
-    for command in commands:
-        ascii, parsed = fetch_command_tldr(cli, command)
-
-        if parsed:
-            command_data.append({
-                'name': command,
-                'purpose': parsed.get('PURPOSE', ''),
-                'inputs': parsed.get('INPUTS', ''),
-                'outputs': parsed.get('OUTPUTS', ''),
-                'sideEffects': parsed.get('SIDE_EFFECTS', ''),
-                'flags': parsed.get('FLAGS', ''),
-                'examples': parsed.get('EXAMPLES', ''),
-                'related': parsed.get('RELATED', ''),
-                'schemaJson': parsed.get('SCHEMA_JSON', ''),
-                'ascii': ascii
-            })
-        else:
-            print(f"⚠ Failed to fetch TLDR for command '{command}'")
-
-    # Build complete data structure
-    data = {
-        'metadata': {
-            'name': name,
-            'version': version,
-            'summary': summary,
-            'generated': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            'tldrSpec': 'v0.1',
-            'totalCommands': len(command_data)
-        },
-        'globalIndex': global_parsed,
-        'commands': command_data,
-        'analytics': analyze_commands({'commands': command_data}),
-        'generatedBy': 'tldr-doc-gen.py (TLDR v0.1 Universal Generator)'
-    }
-
-    # Generate JSON output
-    json_output = f"{cli}_tldr_analytics.json"
-    with open(json_output, 'w') as f:
-        json.dump(data, f, indent=2)
-    print(f"✔ Generated: {json_output}")
-
-    # Analyze mode - print statistics
+    # Analyze mode
     if mode == '--analyze':
-        analytics = data['analytics']
-        print('')
-        print('=' * 50)
-        print('ANALYTICS REPORT')
-        print('=' * 50)
-        print(f"\nTotal Commands: {analytics['totalCommands']}")
+        print_console_analytics(parsed)
+        sys.exit(0)
 
-        print('\nCommand Hierarchy:')
-        for namespace, cmds in sorted(
-            analytics['commandHierarchy'].items(),
-            key=lambda x: len(x[1]),
-            reverse=True
-        ):
-            print(f"  {namespace}: {len(cmds)} commands")
+    # Documentation generation mode
+    print("ℹ Generating analytics JSON...")
 
-        print('\nFlag Type Distribution:')
-        for flag_type, count in sorted(
-            analytics['flagTypeDistribution']['distribution'].items(),
-            key=lambda x: x[1],
-            reverse=True
-        ):
-            print(f"  {flag_type}: {count}")
+    output_file = f"{cli}_tldr_analytics.json"
+    analytics_json = generate_analytics_json(parsed)
 
-        print(f"\nCoverage Metrics:")
-        cov = analytics['coverage']
-        print(f"  Examples: {cov['withExamplesPercent']}% ({cov['withExamples']}/{cov['total']})")
-        print(f"  Related: {cov['withRelatedPercent']}% ({cov['withRelated']}/{cov['total']})")
-        print(f"  Schema: {cov['withSchemaPercent']}% ({cov['withSchema']}/{cov['total']})")
-        print(f"  Side Effects: {cov['withSideEffectsPercent']}% ({cov['withSideEffects']}/{cov['total']})")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(analytics_json)
 
-        print('\nMost Connected Commands:')
-        for cmd_info in analytics['dependencyGraph']['mostConnected'][:5]:
-            print(f"  {cmd_info['command']}: {cmd_info['centrality']} connections " +
-                  f"({cmd_info['outgoing']} out, {cmd_info['incoming']} in)")
+    print(f"✔ Generated: {output_file}")
 
-    # HTML mode
-    if mode == '--html':
-        html_output = f"{cli}_tldr_report.html"
-        generate_html_report(data, html_output)
-        print(f"✔ Generated: {html_output}")
+    # Show file size
+    import os
+    file_size = os.path.getsize(output_file)
+    file_size_kb = file_size // 1024
+    print(f"ℹ File size: {file_size_kb}KB ({file_size} bytes)")
 
-    print('')
-    print('✔ Done! Analytics generated successfully.')
+    print()
+    print("✔ Done! Analytics generated.")
+    print(f"   Run with --analyze flag to see console analytics")
 
 
 if __name__ == '__main__':
